@@ -2,6 +2,10 @@
 
 import { execSync, spawnSync } from "node:child_process";
 import OpenAI from "openai";
+import dotenv from "dotenv";
+
+// Load environment variables from .env file
+dotenv.config();
 
 /**
  * Gets the staged git diff.
