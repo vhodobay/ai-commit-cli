@@ -1,7 +1,7 @@
 {
   "name": "ai-commit-cli",
   "version": "1.0.0",
-  "description": "",
+  "description": "AI-powered Git commit message generator using LM Studio",
   "main": "src/index.js",
   "bin": {
     "ai-commit": "src/index.js"
@@ -9,10 +9,19 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": [
+    "git",
+    "commit",
+    "ai",
+    "lm-studio",
+    "cli"
+  ],
   "author": "",
   "license": "ISC",
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "openai": "^4.57.0"
   }

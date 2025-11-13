@@ -1,14 +1,111 @@
 #!/usr/bin/env node
 
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import OpenAI from "openai";
 
+/**
+ * Gets the staged git diff.
+ * @returns {string} The staged diff output
+ * @throws {Error} If not in a git repository or git command fails
+ */
 function getStagedDiff() {
-  const diff = execSync("git diff --cached", { encoding: "utf8" });
-  return diff.trim();
+  try {
+    const diff = execSync("git diff --cached", { encoding: "utf8" });
+    return diff.trim();
+  } catch (error) {
+    if (error.status === 128) {
+      throw new Error("Not in a git repository");
+    }
+    throw new Error(`Failed to get git diff: ${error.message}`);
+  }
+}
+
+/**
+ * Displays help information.
+ */
+function showHelp() {
+  console.log(`
+ai-commit - AI-powered Git commit message generator
+
+Usage:
+  ai-commit [options]
+
+Options:
+  --no-commit    Show suggested message without committing
+  --help         Show this help message
+
+Environment Variables:
+  LMSTUDIO_MODEL     Model ID to use (required)
+  LMSTUDIO_BASE_URL  API base URL (default: http://localhost:1234/v1)
+  LMSTUDIO_API_KEY   API key (default: lm-studio)
+  COMMIT_TEMPERATURE Temperature for generation (default: 0.3)
+  `.trim());
+  process.exit(0);
+}
+
+/**
+ * Prompts user for confirmation with a timeout.
+ * @param {string} question - The question to ask
+ * @param {number} timeout - Timeout in milliseconds
+ * @returns {Promise<boolean>} True if user confirmed
+ */
+function promptConfirmation(question, timeout = 30000) {
+  return new Promise((resolve) => {
+    if (!process.stdin.isTTY) {
+      console.log("Non-interactive environment detected, aborting.");
+      resolve(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      console.log("\nTimeout reached. Aborting.");
+      cleanup();
+      resolve(false);
+    }, timeout);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      process.stdin.pause();
+      process.stdin.removeAllListeners("data");
+    };
+
+    process.stdout.write(question);
+    process.stdin.setEncoding("utf8");
+    process.stdin.once("data", (data) => {
+      cleanup();
+      const answer = data.trim().toLowerCase();
+      resolve(answer === "y" || answer === "yes");
+    });
+  });
+}
+
+/**
+ * Executes git commit with the provided message.
+ * @param {string} commitMsg - The commit message
+ * @throws {Error} If git commit fails
+ */
+function executeGitCommit(commitMsg) {
+  // Use spawnSync with array arguments to prevent command injection
+  const result = spawnSync("git", ["commit", "-m", commitMsg], {
+    stdio: "inherit",
+    encoding: "utf8",
+  });
+
+  if (result.error) {
+    throw new Error(`Failed to execute git commit: ${result.error.message}`);
+  }
+
+  if (result.status !== 0) {
+    throw new Error(`git commit failed with exit code ${result.status}`);
+  }
 }
 
 async function main() {
+  // Check for help flag
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    showHelp();
+  }
+
   const diff = getStagedDiff();
   if (!diff) {
     console.error("No staged changes. Stage something first.");
@@ -16,6 +113,14 @@ async function main() {
   }
 
   const model = process.env.LMSTUDIO_MODEL || "YOUR_MODEL_ID_HERE";
+
+  // Validate model configuration
+  if (!model || model === "YOUR_MODEL_ID_HERE") {
+    console.error("Error: LMSTUDIO_MODEL environment variable is not set.");
+    console.error("Please set it to your model ID, e.g.:");
+    console.error("  export LMSTUDIO_MODEL='your-model-id'");
+    process.exit(1);
+  }
 
   const systemPrompt = `
 You write concise, high-quality Git commit messages.
@@ -34,20 +139,31 @@ ${diff}
 
   const baseURL = process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1";
   const apiKey = process.env.LMSTUDIO_API_KEY || "lm-studio";
+  const temperature = parseFloat(process.env.COMMIT_TEMPERATURE || "0.3");
 
   const client = new OpenAI({
     apiKey,
     baseURL,
   });
 
-  const completion = await client.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-    temperature: 0.3,
-  });
+  let completion;
+  try {
+    completion = await client.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature,
+    });
+  } catch (error) {
+    throw new Error(`API request failed: ${error.message}`);
+  }
+
+  // Validate API response
+  if (!completion?.choices?.[0]?.message?.content) {
+    throw new Error("Invalid API response: missing completion content");
+  }
 
   const commitMsg = completion.choices[0].message.content.trim();
 
@@ -59,18 +175,14 @@ ${diff}
     process.exit(0);
   }
 
-  process.stdout.write("Use this commit message? [y/N] ");
-  process.stdin.setEncoding("utf8");
-  process.stdin.once("data", (data) => {
-    const answer = data.trim().toLowerCase();
-    if (answer === "y") {
-      execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, {
-        stdio: "inherit",
-      });
-    } else {
-      console.log("\nAborted. You can copy/edit the message manually.");
-    }
-  });
+  const confirmed = await promptConfirmation("Use this commit message? [y/N] ");
+
+  if (confirmed) {
+    executeGitCommit(commitMsg);
+    console.log("\nCommit created successfully!");
+  } else {
+    console.log("\nAborted. You can copy/edit the message manually.");
+  }
 }
 
 main().catch((err) => {
