@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 
 import { execSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import OpenAI from "openai";
 import dotenv from "dotenv";
 
-// Load environment variables from .env file
-dotenv.config();
+// Get the directory where this script is located
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load environment variables from .env file in the package root
+dotenv.config({ path: join(__dirname, "..", ".env") });
 
 /**
  * Gets the staged git diff.
@@ -110,21 +116,27 @@ async function main() {
     showHelp();
   }
 
+  console.log("🔍 Checking for staged changes...");
   const diff = getStagedDiff();
   if (!diff) {
-    console.error("No staged changes. Stage something first.");
+    console.error("❌ No staged changes found. Please stage your changes first with 'git add'.");
     process.exit(1);
   }
+
+  console.log("✓ Found staged changes");
+  console.log(`📊 Diff size: ${diff.length} characters\n`);
 
   const model = process.env.LMSTUDIO_MODEL || "YOUR_MODEL_ID_HERE";
 
   // Validate model configuration
   if (!model || model === "YOUR_MODEL_ID_HERE") {
-    console.error("Error: LMSTUDIO_MODEL environment variable is not set.");
+    console.error("❌ Error: LMSTUDIO_MODEL environment variable is not set.");
     console.error("Please set it to your model ID, e.g.:");
     console.error("  export LMSTUDIO_MODEL='your-model-id'");
     process.exit(1);
   }
+
+  console.log(`🤖 Using model: ${model}`);
 
   const systemPrompt = `
 You write concise, high-quality Git commit messages.
@@ -132,6 +144,7 @@ Rules:
 - Use a single-line summary, ~72 chars max.
 - Use Conventional Commits where it makes sense (feat, fix, refactor, docs, test, chore, ci, perf, style).
 - Focus on WHAT and WHY, not on filenames.
+- Explain WHY the changes might have been made (best-effort inference).
 - Output only the commit summary, no explanations.
 `.trim();
 
@@ -152,6 +165,7 @@ ${diff}
 
   let completion;
   try {
+    console.log("🧠 Generating commit message...");
     completion = await client.chat.completions.create({
       model,
       messages: [
@@ -171,21 +185,23 @@ ${diff}
 
   const commitMsg = completion.choices[0].message.content.trim();
 
-  console.log("\nSuggested commit message:");
+  console.log("\n📝 Suggested commit message:");
   console.log(`  ${commitMsg}\n`);
 
   // Optional interactive confirmation:
   if (process.argv.includes("--no-commit")) {
+    console.log("ℹ️  Preview mode - not committing");
     process.exit(0);
   }
 
   const confirmed = await promptConfirmation("Use this commit message? [y/N] ");
 
   if (confirmed) {
+    console.log("\n💾 Creating commit...");
     executeGitCommit(commitMsg);
-    console.log("\nCommit created successfully!");
+    console.log("✅ Commit created successfully!");
   } else {
-    console.log("\nAborted. You can copy/edit the message manually.");
+    console.log("\n❌ Aborted. You can copy/edit the message manually.");
   }
 }
 
