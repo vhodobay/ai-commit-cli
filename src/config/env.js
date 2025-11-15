@@ -18,6 +18,11 @@ export const config = {
     baseURL: process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1",
     apiKey: process.env.LMSTUDIO_API_KEY || "lm-studio",
     startCommand: process.env.LMSTUDIO_START_COMMAND,
+    // Model loading options
+    loadModel: process.env.LMSTUDIO_LOAD_MODEL !== "false", // Default: true
+    gpu: process.env.LMSTUDIO_GPU || "auto", // max, auto, or 0.0-1.0
+    contextLength: process.env.LMSTUDIO_CONTEXT_LENGTH, // Optional: 1-N
+    modelIdentifier: process.env.LMSTUDIO_MODEL_IDENTIFIER, // Optional: custom identifier
   },
   commit: {
     temperature: parseFloat(process.env.COMMIT_TEMPERATURE || "0.3"),
