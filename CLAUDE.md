@@ -8,18 +8,37 @@ This is a CLI tool that generates AI-powered Git commit messages using LM Studio
 
 ## Architecture
 
-**Single-file Design**: The entire application logic is contained in `src/index.js` - a Node.js CLI script that:
-1. Reads staged git changes using `git diff --cached`
-2. Sends the diff to an LM Studio API endpoint (OpenAI-compatible)
-3. Generates a commit message using the AI model
-4. Prompts for user confirmation (with timeout)
-5. Executes the commit using secure spawn methods
+**Modular Design**: The application is organized into focused modules with clear separation of concerns:
 
-**Key Functions**:
-- `getStagedDiff()`: Retrieves staged changes, includes git repository validation
-- `promptConfirmation()`: Interactive TTY prompt with 30s timeout for non-interactive environments
-- `executeGitCommit()`: Uses `spawnSync` with array arguments to prevent command injection
-- `main()`: Orchestrates the entire flow with error handling
+```
+src/
+  ├── index.js              # CLI entry point, orchestrates the flow
+  ├── config/
+  │   └── env.js            # Environment configuration & validation
+  ├── services/
+  │   ├── lmstudio.js       # LM Studio process management
+  │   └── ai.js             # AI commit message generation
+  └── utils/
+      ├── git.js            # Git operations (diff, commit)
+      └── ui.js             # User interaction (prompts, help)
+```
+
+**Main Flow** (orchestrated in `src/index.js`):
+1. Checks if LM Studio is running, auto-starts it if needed (`services/lmstudio.js`)
+2. Waits for LM Studio API to become accessible (30s timeout)
+3. Reads staged git changes using `git diff --cached` (`utils/git.js`)
+4. Sends the diff to an LM Studio API endpoint (`services/ai.js`)
+5. Generates a commit message using the AI model
+6. Prompts for user confirmation with timeout (`utils/ui.js`)
+7. Executes the commit using secure spawn methods (`utils/git.js`)
+
+**Key Modules**:
+
+- `config/env.js`: Loads environment variables via dotenv, exports config object, validates required settings
+- `utils/git.js`: `getStagedDiff()`, `executeGitCommit()` with array arguments to prevent command injection
+- `utils/ui.js`: `showHelp()`, `promptConfirmation()` with TTY detection and 30s timeout
+- `services/lmstudio.js`: `checkLMStudioAccessible()`, `ensureLMStudioRunning()`, platform-specific startup
+- `services/ai.js`: `generateCommitMessage()`, system prompt definition, OpenAI client initialization
 
 ## Environment Configuration
 
@@ -27,9 +46,10 @@ The tool requires environment variables for configuration:
 - `LMSTUDIO_MODEL`: (Required) Model ID for the AI model
 - `LMSTUDIO_BASE_URL`: API endpoint (default: http://localhost:1234/v1)
 - `LMSTUDIO_API_KEY`: API key (default: lm-studio)
+- `LMSTUDIO_START_COMMAND`: Command to start LM Studio if not running (platform-specific defaults: `open -a "LM Studio"` on macOS, `start lmstudio` on Windows; set to "false" to disable auto-start)
 - `COMMIT_TEMPERATURE`: Generation temperature (default: 0.3)
 
-These are typically stored in a `.env` file (gitignored).
+These are typically stored in a `.env` file (gitignored) loaded from the package root using dotenv.
 
 ## CLI Command
 
@@ -69,17 +89,25 @@ node src/index.js --no-commit
 
 ## Important Implementation Details
 
-1. **Security**: Uses `spawnSync` with array arguments instead of string interpolation to prevent command injection (see `executeGitCommit()`)
+1. **Security**: Uses `spawnSync` with array arguments instead of string interpolation to prevent command injection (see `executeGitCommit()` in `src/utils/git.js`)
 
-2. **Environment Validation**: Checks for required `LMSTUDIO_MODEL` and provides clear error messages if missing
+2. **LM Studio Auto-Start** (in `src/services/lmstudio.js`):
+   - Automatically detects if LM Studio is running by pinging the `/v1/models` endpoint
+   - If not running, spawns LM Studio using platform-specific commands (detached process)
+   - Waits up to 30 seconds for the API to become accessible with 1-second polling intervals
+   - Can be disabled by setting `LMSTUDIO_START_COMMAND=false`
 
-3. **Prompt Engineering**: The system prompt is hardcoded in `main()` and follows Conventional Commits conventions (feat, fix, refactor, etc.)
+3. **Environment Loading**: dotenv loads `.env` from package root (two directories up from src/config/) in `src/config/env.js`
 
-4. **Error Handling**: All major functions have try-catch blocks with specific error messages for debugging
+4. **Environment Validation**: The `validateConfig()` function in `src/config/env.js` checks for required `LMSTUDIO_MODEL` and provides clear error messages if missing
 
-5. **Non-interactive Support**: Detects TTY availability and aborts gracefully in non-interactive environments
+5. **Prompt Engineering**: The system prompt is defined in `SYSTEM_PROMPT` constant in `src/services/ai.js` and follows Conventional Commits conventions (feat, fix, refactor, etc.)
 
-6. **Module System**: Uses ES modules (`"type": "module"` in package.json), so all imports use `import` syntax
+6. **Error Handling**: All major functions have try-catch blocks with specific error messages for debugging
+
+7. **Non-interactive Support**: Detects TTY availability in `promptConfirmation()` (`src/utils/ui.js`) and aborts gracefully in non-interactive environments
+
+8. **Module System**: Uses ES modules (`"type": "module"` in package.json), so all imports use `import` syntax and `.js` extensions
 
 ## Node Version
 
