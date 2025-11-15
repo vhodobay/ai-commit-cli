@@ -20,7 +20,7 @@ export const config = {
     startCommand: process.env.LMSTUDIO_START_COMMAND,
     // Model loading options
     loadModel: process.env.LMSTUDIO_LOAD_MODEL !== "false", // Default: true
-    gpu: process.env.LMSTUDIO_GPU || "auto", // max, auto, or 0.0-1.0
+    gpu: process.env.LMSTUDIO_GPU || "auto", // "max", "auto" (use default), or 0.0-1.0
     contextLength: process.env.LMSTUDIO_CONTEXT_LENGTH, // Optional: 1-N
     modelIdentifier: process.env.LMSTUDIO_MODEL_IDENTIFIER, // Optional: custom identifier
   },

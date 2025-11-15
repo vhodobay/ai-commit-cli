@@ -69,9 +69,22 @@ async function isModelLoaded(modelId) {
 async function loadModelWithCLI(modelId) {
   const args = ["load", modelId];
   
-  // Add GPU option
-  if (config.lmstudio.gpu) {
-    args.push(`--gpu=${config.lmstudio.gpu}`);
+  // Add GPU option - only if it's "max" or a valid number (0.0-1.0)
+  // Skip if "auto" or empty, as "auto" is not a valid value for --gpu
+  if (config.lmstudio.gpu && config.lmstudio.gpu !== "auto") {
+    // Validate: must be "max" or a number between 0.0 and 1.0
+    const gpuValue = config.lmstudio.gpu.toLowerCase();
+    if (gpuValue === "max") {
+      args.push(`--gpu=max`);
+    } else {
+      // Try to parse as a number
+      const numValue = parseFloat(config.lmstudio.gpu);
+      if (!isNaN(numValue) && numValue >= 0.0 && numValue <= 1.0) {
+        args.push(`--gpu=${numValue}`);
+      } else {
+        console.warn(`⚠️  Invalid GPU value "${config.lmstudio.gpu}", skipping --gpu option`);
+      }
+    }
   }
   
   // Add context length option
@@ -85,7 +98,7 @@ async function loadModelWithCLI(modelId) {
   }
   
   console.log(`📦 Loading model: ${modelId}...`);
-  if (config.lmstudio.gpu) {
+  if (config.lmstudio.gpu && config.lmstudio.gpu !== "auto") {
     console.log(`   GPU: ${config.lmstudio.gpu}`);
   }
   if (config.lmstudio.contextLength) {

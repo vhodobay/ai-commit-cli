@@ -19,7 +19,7 @@ Environment Variables:
   LMSTUDIO_START_COMMAND    Command to start LM Studio if not running
                             (default: uses 'lms server start' if available, else GUI)
   LMSTUDIO_LOAD_MODEL       Auto-load model via CLI (default: true, set to "false" to disable)
-  LMSTUDIO_GPU              GPU offload: max, auto, or 0.0-1.0 (default: auto)
+  LMSTUDIO_GPU              GPU offload: "max" or 0.0-1.0 (default: "auto" = use LM Studio default)
   LMSTUDIO_CONTEXT_LENGTH   Context length for model (optional: 1-N)
   LMSTUDIO_MODEL_IDENTIFIER Custom identifier for the model (optional)
   COMMIT_TEMPERATURE        Temperature for generation (default: 0.3)
