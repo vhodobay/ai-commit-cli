@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { config } from "../config/env.js";
+import { formatTokenCount } from "../utils/tokens.js";
 
 /**
  * Checks if the `lms` CLI tool is available.
@@ -317,4 +318,129 @@ export async function ensureLMStudioRunning(baseURL) {
       console.log("   If using GUI, ensure the model is loaded manually");
     }
   }
+}
+
+/**
+ * Gets information about the currently loaded model.
+ * @returns {Promise<{id: string, contextSize: number}|null>} Model info or null if not available
+ */
+export async function getLoadedModelInfo() {
+  try {
+    const modelsURL = `${config.lmstudio.baseURL}/models`;
+    const response = await fetch(modelsURL, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${config.lmstudio.apiKey}`,
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+    if (!data?.data?.length) {
+      return null;
+    }
+
+    // Find the configured model or use the first available
+    const modelId = config.lmstudio.model;
+    const model = data.data.find((m) => m.id === modelId) || data.data[0];
+
+    return {
+      id: model.id,
+      // Context size may be in different fields depending on LM Studio version
+      contextSize: model.context_length || model.max_tokens || config.lmstudio.defaultContext,
+    };
+  } catch (error) {
+    console.warn(`⚠️  Could not get model info: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Unloads the currently loaded model using the CLI.
+ * @param {string} modelId - The model ID to unload
+ * @returns {Promise<boolean>} True if unload succeeded
+ */
+async function unloadModel(modelId) {
+  try {
+    const result = spawnSync("lms", ["unload", modelId], {
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 30000,
+    });
+
+    return result.status === 0;
+  } catch (error) {
+    console.warn(`⚠️  Failed to unload model: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Reloads a model with a specific context size.
+ * @param {string} modelId - The model ID to reload
+ * @param {number} contextSize - The new context size
+ * @param {number} maxRetries - Maximum number of retry attempts (default: 3)
+ * @returns {Promise<boolean>} True if reload succeeded
+ */
+export async function reloadModelWithContext(modelId, contextSize, maxRetries = 3) {
+  console.log(`🔄 Reloading ${modelId} with ${formatTokenCount(contextSize).replace("~", "")} context...`);
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Unload current model
+      await unloadModel(modelId);
+
+      // Small delay to ensure clean unload
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // Build load command arguments
+      const args = ["load", modelId, `--context-length=${contextSize}`];
+
+      // Add GPU option if configured
+      if (config.lmstudio.gpu && config.lmstudio.gpu !== "auto") {
+        const gpuValue = config.lmstudio.gpu.toLowerCase();
+        if (gpuValue === "max") {
+          args.push(`--gpu=max`);
+        } else {
+          const numValue = parseFloat(config.lmstudio.gpu);
+          if (!isNaN(numValue) && numValue >= 0.0 && numValue <= 1.0) {
+            args.push(`--gpu=${numValue}`);
+          }
+        }
+      }
+
+      // Add identifier option if configured
+      if (config.lmstudio.modelIdentifier) {
+        args.push(`--identifier=${config.lmstudio.modelIdentifier}`);
+      }
+
+      const result = spawnSync("lms", args, {
+        encoding: "utf8",
+        stdio: "pipe",
+        timeout: 120000, // Model loading with larger context can take longer
+      });
+
+      if (result.status === 0) {
+        console.log(`✓ Model reloaded with ${formatTokenCount(contextSize).replace("~", "")} context`);
+        return true;
+      }
+
+      const errorMsg = result.stderr || result.stdout || "Unknown error";
+      console.warn(`⚠️  Reload attempt ${attempt}/${maxRetries} failed: ${errorMsg}`);
+    } catch (error) {
+      console.warn(`⚠️  Reload attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+    }
+
+    if (attempt < maxRetries) {
+      console.log(`   Retrying in 2 seconds...`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+
+  console.error(`❌ Failed to reload model after ${maxRetries} attempts`);
+  return false;
 }

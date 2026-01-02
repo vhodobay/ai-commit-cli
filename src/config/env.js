@@ -10,6 +10,21 @@ const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, "..", "..", ".env") });
 
 /**
+ * Parses a comma-separated string into an array of integers.
+ * @param {string} value - Comma-separated values
+ * @param {number[]} defaultValue - Default array if parsing fails
+ * @returns {number[]} Parsed array of integers
+ */
+function parseContextSteps(value, defaultValue) {
+  if (!value) return defaultValue;
+  try {
+    return value.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0);
+  } catch {
+    return defaultValue;
+  }
+}
+
+/**
  * Application configuration loaded from environment variables.
  */
 export const config = {
@@ -23,6 +38,10 @@ export const config = {
     gpu: process.env.LMSTUDIO_GPU || "auto", // "max", "auto" (use default), or 0.0-1.0
     contextLength: process.env.LMSTUDIO_CONTEXT_LENGTH, // Optional: 1-N
     modelIdentifier: process.env.LMSTUDIO_MODEL_IDENTIFIER, // Optional: custom identifier
+    // Dynamic context reloading options
+    defaultContext: parseInt(process.env.LMSTUDIO_DEFAULT_CONTEXT || "4096", 10),
+    contextSteps: parseContextSteps(process.env.LMSTUDIO_CONTEXT_STEPS, [4096, 8192, 16384, 32768]),
+    tokenBuffer: parseInt(process.env.LMSTUDIO_TOKEN_BUFFER || "350", 10),
   },
   commit: {
     temperature: parseFloat(process.env.COMMIT_TEMPERATURE || "0.3"),
