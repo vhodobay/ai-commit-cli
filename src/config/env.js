@@ -29,7 +29,7 @@ function parseContextSteps(value, defaultValue) {
  */
 export const config = {
   lmstudio: {
-    model: process.env.LMSTUDIO_MODEL || "YOUR_MODEL_ID_HERE",
+    model: process.env.LMSTUDIO_MODEL || "qwen3.5-4b",
     baseURL: process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1",
     apiKey: process.env.LMSTUDIO_API_KEY || "lm-studio",
     startCommand: process.env.LMSTUDIO_START_COMMAND,
@@ -53,7 +53,7 @@ export const config = {
  * @throws {Error} If required variables are missing
  */
 export function validateConfig() {
-  if (!config.lmstudio.model || config.lmstudio.model === "YOUR_MODEL_ID_HERE") {
+  if (!config.lmstudio.model) {
     throw new Error(
       "LMSTUDIO_MODEL environment variable is not set.\n" +
       "Please set it to your model ID, e.g.:\n" +
