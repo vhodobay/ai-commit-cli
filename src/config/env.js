@@ -30,7 +30,7 @@ function parseContextSteps(value, defaultValue) {
 export const config = {
   ollama: {
     // Ollama is preferred when available
-    model: process.env.OLLAMA_MODEL || "qwen3:8b",
+    model: process.env.OLLAMA_MODEL || "qwen3:4b",
     // Use Ollama's OpenAI-compatible HTTP API by default
     baseURL: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434/v1",
     // Ollama does not require an API key, but the OpenAI client expects one

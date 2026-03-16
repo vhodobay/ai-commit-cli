@@ -46,7 +46,7 @@ src/
 ## Environment Configuration
 
 The tool requires environment variables for configuration:
-- `OLLAMA_MODEL`: (Optional) Ollama model ID for commit messages (default: `qwen3:8b`)
+- `OLLAMA_MODEL`: (Optional) Ollama model ID for commit messages (default: `qwen3:4b`)
 - `OLLAMA_BASE_URL`: Ollama OpenAI-compatible API endpoint (default: http://127.0.0.1:11434/v1)
 - `OLLAMA_API_KEY`: Optional API key used only for the OpenAI client (default: `ollama`, but Ollama does not require it)
 - `LMSTUDIO_MODEL`: (Required for LM Studio fallback) Model ID for the LM Studio AI model (default: `qwen3.5-4b`)
