@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a CLI tool that generates AI-powered Git commit messages using LM Studio (or any OpenAI-compatible API endpoint). It analyzes staged git changes and generates conventional commit messages through a local AI model.
+This is a CLI tool that generates AI-powered Git commit messages using **Ollama** when available, falling back to **LM Studio** (or any OpenAI-compatible API endpoint). It analyzes staged git changes and generates conventional commit messages through a local AI model.
 
 ## Architecture
 
@@ -16,6 +16,7 @@ src/
   ├── config/
   │   └── env.js            # Environment configuration & validation
   ├── services/
+  │   ├── ollama.js         # Ollama availability checks
   │   ├── lmstudio.js       # LM Studio process management
   │   └── ai.js             # AI commit message generation
   └── utils/
@@ -24,13 +25,15 @@ src/
 ```
 
 **Main Flow** (orchestrated in `src/index.js`):
-1. Checks if LM Studio is running, auto-starts it if needed (`services/lmstudio.js`)
-2. Waits for LM Studio API to become accessible (30s timeout)
-3. Reads staged git changes using `git diff --cached` (`utils/git.js`)
-4. Sends the diff to an LM Studio API endpoint (`services/ai.js`)
-5. Generates a commit message using the AI model
-6. Prompts for user confirmation with timeout (`utils/ui.js`)
-7. Executes the commit using secure spawn methods (`utils/git.js`)
+1. Checks if Ollama is reachable via its OpenAI-compatible API (`services/ollama.js`)
+2. If Ollama is available, uses it directly without auto-start
+3. If Ollama is not available, ensures LM Studio is running and auto-starts it if needed (`services/lmstudio.js`)
+4. Waits for the selected backend API to become accessible (LM Studio: 30s timeout)
+5. Reads staged git changes using `git diff --cached` (`utils/git.js`)
+6. Sends the diff to the selected backend's API endpoint (`services/ai.js`)
+7. Generates a commit message using the AI model
+8. Prompts for user confirmation with timeout (`utils/ui.js`)
+9. Executes the commit using secure spawn methods (`utils/git.js`)
 
 **Key Modules**:
 
@@ -43,9 +46,12 @@ src/
 ## Environment Configuration
 
 The tool requires environment variables for configuration:
-- `LMSTUDIO_MODEL`: (Required) Model ID for the AI model
-- `LMSTUDIO_BASE_URL`: API endpoint (default: http://localhost:1234/v1)
-- `LMSTUDIO_API_KEY`: API key (default: lm-studio)
+- `OLLAMA_MODEL`: (Optional) Ollama model ID for commit messages (default: `qwen3:8b`)
+- `OLLAMA_BASE_URL`: Ollama OpenAI-compatible API endpoint (default: http://127.0.0.1:11434/v1)
+- `OLLAMA_API_KEY`: Optional API key used only for the OpenAI client (default: `ollama`, but Ollama does not require it)
+- `LMSTUDIO_MODEL`: (Required for LM Studio fallback) Model ID for the LM Studio AI model (default: `qwen3.5-4b`)
+- `LMSTUDIO_BASE_URL`: LM Studio API endpoint (default: http://localhost:1234/v1)
+- `LMSTUDIO_API_KEY`: LM Studio API key (default: lm-studio)
 - `LMSTUDIO_START_COMMAND`: Command to start LM Studio if not running (platform-specific defaults: `open -a "LM Studio"` on macOS, `start lmstudio` on Windows; set to "false" to disable auto-start)
 - `COMMIT_TEMPERATURE`: Generation temperature (default: 0.3)
 

@@ -4,6 +4,7 @@ import { config, validateConfig } from "./config/env.js";
 import { getStagedDiff, executeGitCommit } from "./utils/git.js";
 import { showHelp, promptConfirmation } from "./utils/ui.js";
 import { ensureLMStudioRunning } from "./services/lmstudio.js";
+import { checkOllamaAvailable } from "./services/ollama.js";
 import { generateCommitMessage } from "./services/ai.js";
 
 async function main() {
@@ -24,13 +25,27 @@ async function main() {
 
   // Validate configuration
   validateConfig();
-  console.log(`🤖 Using model: ${config.lmstudio.model}`);
+  console.log(`🤖 Preferred Ollama model: ${config.ollama.model}`);
+  console.log(`🤖 Fallback LM Studio model: ${config.lmstudio.model}`);
 
-  // Ensure LM Studio is running before making API calls
-  await ensureLMStudioRunning(config.lmstudio.baseURL);
+  // Determine which backend to use: prefer Ollama, fall back to LM Studio
+  let backend = "lmstudio";
+
+  console.log("🔍 Checking if Ollama is running...");
+  const ollamaAvailable = await checkOllamaAvailable(config.ollama.baseURL);
+
+  if (ollamaAvailable) {
+    console.log("✓ Ollama is available, using Ollama backend");
+    backend = "ollama";
+  } else {
+    console.log("⚠️  Ollama is not reachable, falling back to LM Studio");
+    // Ensure LM Studio is running before making API calls
+    await ensureLMStudioRunning(config.lmstudio.baseURL);
+    backend = "lmstudio";
+  }
 
   // Generate commit message
-  const commitMsg = await generateCommitMessage(diff);
+  const commitMsg = await generateCommitMessage(diff, backend);
 
   console.log("\n📝 Suggested commit message:");
   console.log(`  ${commitMsg}\n`);
