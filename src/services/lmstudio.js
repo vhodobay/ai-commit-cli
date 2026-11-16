@@ -1,65 +1,97 @@
 import { spawn, spawnSync } from "node:child_process";
 import { config } from "../config/env.js";
-import { formatTokenCount } from "../utils/tokens.js";
+import { formatContextSize } from "../utils/tokens.js";
+
+/** Cached result of the `lms` availability check; undefined until first checked. */
+let lmsCliAvailable;
 
 /**
- * Checks if the `lms` CLI tool is available.
- * @returns {Promise<boolean>} True if `lms` is available
+ * Runs an `lms` CLI command. Never throws.
+ * @param {string[]} args - Arguments for `lms`
+ * @param {number} [timeout] - Timeout in milliseconds; none if omitted
+ * @returns {{ok: boolean, stdout: string, stderr: string, error?: string}} Command outcome
  */
-async function isLMSCLIAvailable() {
+function runLms(args, timeout) {
   try {
-    // Try running `lms version` to check if CLI is available
-    const result = spawnSync("lms", ["version"], {
-      encoding: "utf8",
-      timeout: 2000,
-    });
-    return result.status === 0;
+    const result = spawnSync("lms", args, { encoding: "utf8", stdio: "pipe", timeout });
+    return {
+      ok: result.status === 0,
+      stdout: result.stdout || "",
+      stderr: result.stderr || "",
+      error: result.error?.message,
+    };
   } catch (error) {
-    return false;
+    return { ok: false, stdout: "", stderr: "", error: error.message };
   }
 }
 
 /**
- * Checks LM Studio server status using the `lms` CLI.
- * @returns {Promise<boolean>} True if server is running
+ * Builds the argument list for `lms load`. Pure: it does not print anything.
+ * Flags are added in this order: context length, GPU, identifier.
+ * An invalid GPU value is skipped and reported in `warnings` instead.
+ * @param {string} modelId - The model ID to load
+ * @param {{contextLength?: number|string, gpu?: string, identifier?: string}} [options] - Load options
+ * @returns {{args: string[], warnings: string[]}} `args` for `lms`, and a warning message for each skipped option
  */
-async function checkServerStatusWithCLI() {
-  try {
-    const result = spawnSync("lms", ["server", "status"], {
-      encoding: "utf8",
-      timeout: 2000,
-    });
-    // If command succeeds, server is likely running
-    // The status command returns 0 if server is running
-    return result.status === 0;
-  } catch (error) {
-    return false;
+export function buildLoadArgs(modelId, { contextLength, gpu, identifier } = {}) {
+  const args = ["load", modelId];
+  const warnings = [];
+
+  if (contextLength) {
+    args.push(`--context-length=${contextLength}`);
   }
+
+  // Only "max" or a number between 0.0 and 1.0 is valid for --gpu; "auto" means use the default
+  if (gpu && gpu !== "auto") {
+    const numValue = parseFloat(gpu);
+    if (gpu.toLowerCase() === "max") {
+      args.push("--gpu=max");
+    } else if (!isNaN(numValue) && numValue >= 0.0 && numValue <= 1.0) {
+      args.push(`--gpu=${numValue}`);
+    } else {
+      warnings.push(`Invalid GPU value "${gpu}", skipping --gpu option`);
+    }
+  }
+
+  if (identifier) {
+    args.push(`--identifier=${identifier}`);
+  }
+
+  return { args, warnings };
+}
+
+/**
+ * Checks if the `lms` CLI is available. The result is cached for the process.
+ * A negative result is not retried, which is acceptable for a short-lived CLI.
+ * @returns {boolean} True if `lms` is available
+ */
+function isLMSCLIAvailable() {
+  if (lmsCliAvailable === undefined) {
+    lmsCliAvailable = runLms(["version"], 2000).ok;
+  }
+  return lmsCliAvailable;
+}
+
+/**
+ * Clears the cached `lms` availability result so tests can check it again.
+ * @internal
+ */
+export function _resetLmsCacheForTests() {
+  lmsCliAvailable = undefined;
 }
 
 /**
  * Checks if a model is currently loaded using `lms ps`.
  * @param {string} modelId - The model ID to check for
- * @returns {Promise<boolean>} True if the model is loaded
+ * @returns {boolean} True if the model is loaded
  */
-async function isModelLoaded(modelId) {
-  try {
-    const result = spawnSync("lms", ["ps"], {
-      encoding: "utf8",
-      timeout: 3000,
-    });
-    
-    if (result.status !== 0) {
-      return false;
-    }
-    
-    // Check if the model ID appears in the output
-    const output = result.stdout || "";
-    // The model might be listed by its full path or identifier
-    return output.includes(modelId) || output.includes(config.lmstudio.modelIdentifier || modelId);
-  } catch (error) {
+function isModelLoaded(modelId) {
+  const result = runLms(["ps"], 3000);
+  if (!result.ok) {
     return false;
   }
+  // The model might be listed by its full path or identifier
+  return result.stdout.includes(modelId) || result.stdout.includes(config.lmstudio.modelIdentifier || modelId);
 }
 
 /**
@@ -67,95 +99,38 @@ async function isModelLoaded(modelId) {
  * @param {string} modelId - The model ID to load
  * @throws {Error} If loading fails
  */
-async function loadModelWithCLI(modelId) {
-  const args = ["load", modelId];
-  
-  // Add GPU option - only if it's "max" or a valid number (0.0-1.0)
-  // Skip if "auto" or empty, as "auto" is not a valid value for --gpu
-  if (config.lmstudio.gpu && config.lmstudio.gpu !== "auto") {
-    // Validate: must be "max" or a number between 0.0 and 1.0
-    const gpuValue = config.lmstudio.gpu.toLowerCase();
-    if (gpuValue === "max") {
-      args.push(`--gpu=max`);
-    } else {
-      // Try to parse as a number
-      const numValue = parseFloat(config.lmstudio.gpu);
-      if (!isNaN(numValue) && numValue >= 0.0 && numValue <= 1.0) {
-        args.push(`--gpu=${numValue}`);
-      } else {
-        console.warn(`⚠️  Invalid GPU value "${config.lmstudio.gpu}", skipping --gpu option`);
-      }
-    }
+function loadModelWithCLI(modelId) {
+  const { gpu, contextLength, modelIdentifier } = config.lmstudio;
+  const { args, warnings } = buildLoadArgs(modelId, { contextLength, gpu, identifier: modelIdentifier });
+  for (const w of warnings) {
+    console.warn(`⚠️  ${w}`);
   }
-  
-  // Add context length option
-  if (config.lmstudio.contextLength) {
-    args.push(`--context-length=${config.lmstudio.contextLength}`);
-  }
-  
-  // Add identifier option
-  if (config.lmstudio.modelIdentifier) {
-    args.push(`--identifier=${config.lmstudio.modelIdentifier}`);
-  }
-  
+
   console.log(`📦 Loading model: ${modelId}...`);
-  if (config.lmstudio.gpu && config.lmstudio.gpu !== "auto") {
-    console.log(`   GPU: ${config.lmstudio.gpu}`);
+  if (gpu && gpu !== "auto") {
+    console.log(`   GPU: ${gpu}`);
   }
-  if (config.lmstudio.contextLength) {
-    console.log(`   Context length: ${config.lmstudio.contextLength}`);
+  if (contextLength) {
+    console.log(`   Context length: ${contextLength}`);
   }
-  
-  try {
-    const result = spawnSync("lms", args, {
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 60000, // Model loading can take time
-    });
-    
-    if (result.status !== 0) {
-      const errorMsg = result.stderr || result.stdout || "Unknown error";
-      throw new Error(`Failed to load model: ${errorMsg}`);
-    }
-    
-    console.log("✓ Model loaded successfully");
-  } catch (error) {
-    throw new Error(`Failed to load model: ${error.message}`);
+
+  // Model loading can take time
+  const result = runLms(args, 60000);
+  if (!result.ok) {
+    throw new Error(`Failed to load model: ${result.stderr || result.stdout || result.error || "Unknown error"}`);
   }
+
+  console.log("✓ Model loaded successfully");
 }
 
 /**
- * Checks if LM Studio API is accessible.
+ * Checks if the LM Studio API is accessible.
  * @param {string} baseURL - The API base URL
- * @returns {Promise<boolean>} True if accessible
+ * @returns {Promise<boolean>} True if the models endpoint responds OK
  */
 export async function checkLMStudioAccessible(baseURL) {
-  // First try the faster CLI status check if available
-  const hasCLI = await isLMSCLIAvailable();
-  if (hasCLI) {
-    const cliStatus = await checkServerStatusWithCLI();
-    if (cliStatus) {
-      // Double-check with API call to ensure it's actually responding
-      try {
-        const modelsURL = `${baseURL}/models`;
-        const response = await fetch(modelsURL, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${config.lmstudio.apiKey}`,
-          },
-          signal: AbortSignal.timeout(2000),
-        });
-        return response.ok;
-      } catch (error) {
-        return false;
-      }
-    }
-  }
-
-  // Fallback to direct API check
   try {
-    const modelsURL = `${baseURL}/models`;
-    const response = await fetch(modelsURL, {
+    const response = await fetch(`${baseURL}/models`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${config.lmstudio.apiKey}`,
@@ -169,72 +144,62 @@ export async function checkLMStudioAccessible(baseURL) {
 }
 
 /**
+ * Starts a process detached from this one so the CLI can exit without waiting for it.
+ * Synchronous spawn failures throw. Asynchronous ones (such as ENOENT) are logged, and
+ * `waitForLMStudio` then times out with its normal message.
+ * @param {string} command - Command or executable to run
+ * @param {string[]} args - Arguments for the command
+ * @param {import("node:child_process").SpawnOptions} options - Extra spawn options
+ * @throws {Error} If the process cannot be started synchronously
+ */
+function spawnDetached(command, args, options) {
+  try {
+    const child = spawn(command, args, { detached: true, stdio: "ignore", ...options });
+    child.on("error", (err) => console.warn(`⚠️  Failed to start LM Studio: ${err.message}`));
+    child.unref();
+  } catch (error) {
+    throw new Error(`Failed to start LM Studio: ${error.message}`);
+  }
+}
+
+/**
  * Starts LM Studio using the configured command.
  * Prefers `lms server start` (faster, headless) over GUI application.
- * @param {string} startCommand - Command to start LM Studio
- * @throws {Error} If starting fails
+ * @internal
+ * @param {string} startCommand - Command to start LM Studio; empty to use the platform default
+ * @throws {Error} If a synchronous spawn failure occurs. Asynchronous spawn failures are logged, not thrown.
  */
-async function startLMStudio(startCommand) {
-  // If no custom command specified, try to use `lms server start` first
+export async function startLMStudio(startCommand) {
   if (!startCommand) {
-    const hasCLI = await isLMSCLIAvailable();
-    if (hasCLI) {
+    if (isLMSCLIAvailable()) {
       console.log("🚀 Starting LM Studio server with `lms server start` (headless mode)...");
-      try {
-        // Use spawnSync to wait for the command to complete
-        // `lms server start` should return quickly after starting the server
-        const result = spawnSync("lms", ["server", "start"], {
-          encoding: "utf8",
-          stdio: "pipe",
-        });
-        
-        if (result.status === 0) {
-          return; // Successfully started
-        } else {
-          // If lms server start fails, fall through to GUI fallback
-          console.log("⚠️  `lms server start` failed, falling back to GUI application...");
-        }
-      } catch (error) {
-        // If lms command fails, fall through to GUI fallback
-        console.log("⚠️  `lms` CLI not working, falling back to GUI application...");
-      }
-    }
-
-    // Fallback to GUI application
-    if (process.platform === "darwin") {
-      try {
-        const child = spawn("open", ["-a", "LM Studio"], {
-          detached: true,
-          stdio: "ignore",
-        });
-        child.unref();
-        console.log("🚀 Starting LM Studio GUI application...");
+      // Runs to completion; `lms server start` returns quickly once the server is up
+      if (runLms(["server", "start"]).ok) {
         return;
-      } catch (error) {
-        throw new Error(`Failed to start LM Studio: ${error.message}`);
       }
-    } else if (process.platform === "win32") {
-      startCommand = "start lmstudio";
-    } else {
-      startCommand = "lmstudio";
+      console.log("⚠️  `lms server start` failed, falling back to GUI application...");
     }
+
+    if (process.platform === "darwin") {
+      spawnDetached("open", ["-a", "LM Studio"], {});
+      console.log("🚀 Starting LM Studio GUI application...");
+      return;
+    }
+    startCommand = process.platform === "win32" ? "start lmstudio" : "lmstudio";
   }
 
-  // Custom command specified or fallback for non-macOS
-  if (startCommand) {
-    console.log(`🚀 Starting LM Studio with: ${startCommand}`);
-    try {
-      // Use shell execution for custom commands to handle quotes and complex commands
-      const child = spawn(startCommand, {
-        shell: true,
-        detached: true,
-        stdio: "ignore",
-      });
-      child.unref(); // Allow the parent process to exit independently
-    } catch (error) {
-      throw new Error(`Failed to start LM Studio: ${error.message}`);
-    }
-  }
+  console.log(`🚀 Starting LM Studio with: ${startCommand}`);
+  // Shell execution handles quotes and complex commands
+  spawnDetached(startCommand, [], { shell: true });
+}
+
+/**
+ * Pauses for the given time.
+ * @param {number} ms - Milliseconds to wait
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -253,7 +218,7 @@ async function waitForLMStudio(baseURL, maxWaitTime = 30000, checkInterval = 100
       console.log("✓ LM Studio is ready");
       return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, checkInterval));
+    await sleep(checkInterval);
     process.stdout.write(".");
   }
 
@@ -270,7 +235,7 @@ export async function ensureLMStudioRunning(baseURL) {
   console.log("🔍 Checking if LM Studio is running...");
 
   const wasAlreadyRunning = await checkLMStudioAccessible(baseURL);
-  
+
   if (!wasAlreadyRunning) {
     console.log("⚠️  LM Studio is not running");
 
@@ -298,13 +263,11 @@ export async function ensureLMStudioRunning(baseURL) {
 
   // Check if model loading is enabled and if we should load the model
   if (config.lmstudio.loadModel && config.lmstudio.model && config.lmstudio.model !== "YOUR_MODEL_ID_HERE") {
-    const hasCLI = await isLMSCLIAvailable();
-    if (hasCLI) {
-      const modelLoaded = await isModelLoaded(config.lmstudio.model);
-      if (!modelLoaded) {
+    if (isLMSCLIAvailable()) {
+      if (!isModelLoaded(config.lmstudio.model)) {
         console.log("⚠️  Model is not loaded");
         try {
-          await loadModelWithCLI(config.lmstudio.model);
+          loadModelWithCLI(config.lmstudio.model);
         } catch (error) {
           console.warn(`⚠️  Failed to load model automatically: ${error.message}`);
           console.warn("   You may need to load the model manually or it may already be loaded via GUI");
@@ -361,84 +324,55 @@ export async function getLoadedModelInfo() {
 }
 
 /**
- * Unloads the currently loaded model using the CLI.
+ * Unloads a model using `lms unload`.
  * @param {string} modelId - The model ID to unload
- * @returns {Promise<boolean>} True if unload succeeded
+ * @returns {boolean} True if unload succeeded
  */
-async function unloadModel(modelId) {
-  try {
-    const result = spawnSync("lms", ["unload", modelId], {
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 30000,
-    });
-
-    return result.status === 0;
-  } catch (error) {
-    console.warn(`⚠️  Failed to unload model: ${error.message}`);
-    return false;
-  }
+function unloadModel(modelId) {
+  return runLms(["unload", modelId], 30000).ok;
 }
 
 /**
  * Reloads a model with a specific context size.
+ * Returns false without running `lms` if the context size is not a positive finite number.
  * @param {string} modelId - The model ID to reload
- * @param {number} contextSize - The new context size
+ * @param {number} contextSize - The new context size in tokens
  * @param {number} maxRetries - Maximum number of retry attempts (default: 3)
  * @returns {Promise<boolean>} True if reload succeeded
  */
 export async function reloadModelWithContext(modelId, contextSize, maxRetries = 3) {
-  console.log(`🔄 Reloading ${modelId} with ${formatTokenCount(contextSize).replace("~", "")} context...`);
+  if (!(typeof contextSize === "number" && Number.isFinite(contextSize) && contextSize > 0)) {
+    console.error(`❌ Cannot reload ${modelId}: invalid context size ${contextSize} (expected a positive number of tokens)`);
+    return false;
+  }
+
+  console.log(`🔄 Reloading ${modelId} with ${formatContextSize(contextSize)} context...`);
+
+  const { gpu, modelIdentifier } = config.lmstudio;
+  const { args, warnings } = buildLoadArgs(modelId, { contextLength: contextSize, gpu, identifier: modelIdentifier });
+  for (const w of warnings) {
+    console.warn(`⚠️  ${w}`);
+  }
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // Unload current model
-      await unloadModel(modelId);
+    unloadModel(modelId);
 
-      // Small delay to ensure clean unload
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    // Small delay to ensure clean unload
+    await sleep(500);
 
-      // Build load command arguments
-      const args = ["load", modelId, `--context-length=${contextSize}`];
-
-      // Add GPU option if configured
-      if (config.lmstudio.gpu && config.lmstudio.gpu !== "auto") {
-        const gpuValue = config.lmstudio.gpu.toLowerCase();
-        if (gpuValue === "max") {
-          args.push(`--gpu=max`);
-        } else {
-          const numValue = parseFloat(config.lmstudio.gpu);
-          if (!isNaN(numValue) && numValue >= 0.0 && numValue <= 1.0) {
-            args.push(`--gpu=${numValue}`);
-          }
-        }
-      }
-
-      // Add identifier option if configured
-      if (config.lmstudio.modelIdentifier) {
-        args.push(`--identifier=${config.lmstudio.modelIdentifier}`);
-      }
-
-      const result = spawnSync("lms", args, {
-        encoding: "utf8",
-        stdio: "pipe",
-        timeout: 120000, // Model loading with larger context can take longer
-      });
-
-      if (result.status === 0) {
-        console.log(`✓ Model reloaded with ${formatTokenCount(contextSize).replace("~", "")} context`);
-        return true;
-      }
-
-      const errorMsg = result.stderr || result.stdout || "Unknown error";
-      console.warn(`⚠️  Reload attempt ${attempt}/${maxRetries} failed: ${errorMsg}`);
-    } catch (error) {
-      console.warn(`⚠️  Reload attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+    // Model loading with larger context can take longer
+    const result = runLms(args, 120000);
+    if (result.ok) {
+      console.log(`✓ Model reloaded with ${formatContextSize(contextSize)} context`);
+      return true;
     }
+
+    const errorMsg = result.stderr || result.stdout || result.error || "Unknown error";
+    console.warn(`⚠️  Reload attempt ${attempt}/${maxRetries} failed: ${errorMsg}`);
 
     if (attempt < maxRetries) {
       console.log(`   Retrying in 2 seconds...`);
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await sleep(2000);
     }
   }
 

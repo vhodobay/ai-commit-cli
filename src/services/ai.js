@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { config } from "../config/env.js";
-import { estimateTokenCount, findRequiredContext, formatTokenCount } from "../utils/tokens.js";
+import { estimateTokenCount, findRequiredContext, formatContextSize, formatTokenCount } from "../utils/tokens.js";
 import { getLoadedModelInfo, reloadModelWithContext } from "./lmstudio.js";
 
 /**
@@ -38,18 +38,18 @@ async function ensureSufficientContext(requiredTokens, currentContext) {
 
   if (targetContext === null) {
     throw new Error(
-      `Diff is ${formatTokenCount(requiredTokens)}, exceeds maximum context (${formatTokenCount(maxContext).replace("~", "")}).\n` +
+      `Diff is ${formatTokenCount(requiredTokens)}, exceeds maximum context (${formatContextSize(maxContext)}).\n` +
       `Consider splitting your changes into smaller commits.`
     );
   }
 
   // Need to reload with larger context
-  console.log(`📊 Diff requires ${formatTokenCount(requiredTokens)}, current context is ${formatTokenCount(currentContext).replace("~", "")}`);
+  console.log(`📊 Diff requires ${formatTokenCount(requiredTokens)}, current context is ${formatContextSize(currentContext)}`);
 
   const reloaded = await reloadModelWithContext(model, targetContext);
   if (!reloaded) {
     throw new Error(
-      `Failed to reload model with ${formatTokenCount(targetContext).replace("~", "")} context.\n` +
+      `Failed to reload model with ${formatContextSize(targetContext)} context.\n` +
       `Please check LM Studio and try again.`
     );
   }
@@ -71,7 +71,7 @@ async function ollamaChat(userPrompt) {
 
   if (numCtx === null) {
     throw new Error(
-      `Diff is ${formatTokenCount(requiredTokens)}, exceeds maximum context (${formatTokenCount(Math.max(...contextSteps)).replace("~", "")}).\n` +
+      `Diff is ${formatTokenCount(requiredTokens)}, exceeds maximum context (${formatContextSize(Math.max(...contextSteps))}).\n` +
       `Consider splitting your changes into smaller commits.`
     );
   }

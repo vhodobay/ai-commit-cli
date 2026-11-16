@@ -46,3 +46,12 @@ export function formatTokenCount(tokens) {
   }
   return `~${tokens} tokens`;
 }
+
+/**
+ * Formats a context size for display without the approximate "~" prefix (e.g., "8.2k tokens").
+ * @param {number} tokens - The context size in tokens
+ * @returns {string} Formatted string
+ */
+export function formatContextSize(tokens) {
+  return formatTokenCount(tokens).replace("~", "");
+}
