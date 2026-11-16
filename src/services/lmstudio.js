@@ -110,32 +110,47 @@ function isModelLoaded(modelId) {
 }
 
 /**
- * Loads a model using `lms load` with configured options.
+ * Loads a model using `lms load` with the configured GPU and identifier options. The only place
+ * that builds and runs `lms load`.
  * @param {string} modelId - The model ID to load
+ * @param {number|string} [contextLength] - Context length; defaults to LMSTUDIO_CONTEXT_LENGTH
+ * @param {number} [timeout] - Timeout in milliseconds (model loading can take time)
  * @throws {Error} If loading fails
  */
-function loadModelWithCLI(modelId) {
-  const { gpu, contextLength, modelIdentifier } = config.lmstudio;
+function loadModelWithCLI(modelId, contextLength = config.lmstudio.contextLength, timeout = 60000) {
+  const { gpu, modelIdentifier } = config.lmstudio;
   const { args, warnings } = buildLoadArgs(modelId, { contextLength, gpu, identifier: modelIdentifier });
   for (const w of warnings) {
     console.warn(`⚠️  ${w}`);
   }
 
-  console.log(`📦 Loading model: ${modelId}...`);
-  if (gpu && gpu !== "auto") {
-    console.log(`   GPU: ${gpu}`);
-  }
-  if (contextLength) {
-    console.log(`   Context length: ${contextLength}`);
-  }
-
-  // Model loading can take time
-  const result = runLms(args, 60000);
+  const result = runLms(args, timeout);
   if (!result.ok) {
-    throw new Error(`Failed to load model: ${result.stderr || result.stdout || result.error || "Unknown error"}`);
+    throw new Error(result.stderr || result.stdout || result.error || "Unknown error");
   }
+}
 
-  console.log("✓ Model loaded successfully");
+/**
+ * Authenticated GET against LM Studio. Rejects on network errors and timeouts.
+ * @param {string} url - Full URL to request
+ * @param {number} timeout - Timeout in milliseconds
+ * @returns {Promise<Response>} The response, whatever its status
+ */
+function lmStudioGet(url, timeout) {
+  return fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${config.lmstudio.apiKey}` },
+    signal: AbortSignal.timeout(timeout),
+  });
+}
+
+/**
+ * Fetches LM Studio's native model list, which (unlike `/v1/models`) reports state and loaded context.
+ * @param {string} baseURL - The API base URL (with or without the `/v1` suffix)
+ * @returns {Promise<Response>} The response, whatever its status
+ */
+function fetchV0Models(baseURL) {
+  return lmStudioGet(`${baseURL.replace(/\/v1\/?$/, "")}/api/v0/models`, 5000);
 }
 
 /**
@@ -145,14 +160,7 @@ function loadModelWithCLI(modelId) {
  */
 export async function checkLMStudioAccessible(baseURL) {
   try {
-    const response = await fetch(`${baseURL}/models`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${config.lmstudio.apiKey}`,
-      },
-      signal: AbortSignal.timeout(2000),
-    });
-    return response.ok;
+    return (await lmStudioGet(`${baseURL}/models`, 2000)).ok;
   } catch (error) {
     return false;
   }
@@ -248,10 +256,7 @@ async function waitForLMStudio(baseURL, maxWaitTime = 30000, checkInterval = 100
  */
 async function listLoadedChatModels(baseURL) {
   try {
-    const response = await fetch(`${baseURL.replace(/\/v1\/?$/, "")}/api/v0/models`, {
-      headers: { Authorization: `Bearer ${config.lmstudio.apiKey}` },
-      signal: AbortSignal.timeout(5000),
-    });
+    const response = await fetchV0Models(baseURL);
     if (!response.ok) {
       return [];
     }
@@ -316,9 +321,18 @@ export async function ensureLMStudioRunning(baseURL) {
       if (!isModelLoaded(config.lmstudio.model)) {
         console.log("⚠️  Model is not loaded");
         try {
-          loadModelWithCLI(config.lmstudio.model);
+          const { model, gpu, contextLength } = config.lmstudio;
+          console.log(`📦 Loading model: ${model}...`);
+          if (gpu && gpu !== "auto") {
+            console.log(`   GPU: ${gpu}`);
+          }
+          if (contextLength) {
+            console.log(`   Context length: ${contextLength}`);
+          }
+          loadModelWithCLI(model);
+          console.log("✓ Model loaded successfully");
         } catch (error) {
-          console.warn(`⚠️  Failed to load model automatically: ${error.message}`);
+          console.warn(`⚠️  Failed to load model automatically: Failed to load model: ${error.message}`);
           console.warn("   You may need to load the model manually or it may already be loaded via GUI");
         }
       } else {
@@ -441,7 +455,7 @@ function contextFromLmsPs(targets) {
  * @returns {Promise<{id: string, contextSize: number}|null>} Model info, or null if LM Studio cannot be queried
  */
 export async function getLoadedModelInfo(modelId = config.lmstudio.model) {
-  const { baseURL, apiKey, model, modelIdentifier, defaultContext } = config.lmstudio;
+  const { baseURL, model, modelIdentifier, defaultContext } = config.lmstudio;
   // `lms load --identifier=X` lists the configured model under X, so the identifier takes priority
   const targets = (modelId === model ? [modelIdentifier, modelId] : [modelId]).filter(Boolean);
 
@@ -449,14 +463,7 @@ export async function getLoadedModelInfo(modelId = config.lmstudio.model) {
   let answered = false;
   try {
     // /v1/models omits context info; LM Studio's native /api/v0/models has loaded_context_length
-    const modelsURL = `${baseURL.replace(/\/v1\/?$/, "")}/api/v0/models`;
-    const response = await fetch(modelsURL, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: AbortSignal.timeout(5000),
-    });
+    const response = await fetchV0Models(baseURL);
 
     if (!response.ok) {
       // 404 is normal on older LM Studio versions without /api/v0, so only other statuses are unexpected
@@ -529,27 +536,20 @@ export async function reloadModelWithContext(modelId, contextSize, maxRetries = 
 
   console.log(`🔄 Reloading ${modelId} with ${formatContextSize(contextSize)} context...`);
 
-  const { gpu, modelIdentifier } = config.lmstudio;
-  const { args, warnings } = buildLoadArgs(modelId, { contextLength: contextSize, gpu, identifier: modelIdentifier });
-  for (const w of warnings) {
-    console.warn(`⚠️  ${w}`);
-  }
-
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     unloadModel(modelId);
 
     // Small delay to ensure clean unload
     await sleep(500);
 
-    // Model loading with larger context can take longer
-    const result = runLms(args, 120000);
-    if (result.ok) {
+    try {
+      // Model loading with larger context can take longer
+      loadModelWithCLI(modelId, contextSize, 120000);
       console.log(`✓ Model reloaded with ${formatContextSize(contextSize)} context`);
       return true;
+    } catch (error) {
+      console.warn(`⚠️  Reload attempt ${attempt}/${maxRetries} failed: ${error.message}`);
     }
-
-    const errorMsg = result.stderr || result.stdout || result.error || "Unknown error";
-    console.warn(`⚠️  Reload attempt ${attempt}/${maxRetries} failed: ${errorMsg}`);
 
     if (attempt < maxRetries) {
       console.log(`   Retrying in 2 seconds...`);

@@ -460,3 +460,24 @@ test("getLoadedModelInfo reads the context of the model it is asked about", asyn
 
   assert.deepEqual(info, { id: "chat-model", contextSize: 32768 });
 });
+
+test(
+  "reloadModelWithContext warns about an invalid GPU value and omits --gpu",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    t.mock.method(console, "log", () => {});
+    const warnMock = t.mock.method(console, "warn", () => {});
+    const lms = makeLmsStub();
+    const savedGpu = config.lmstudio.gpu;
+    try {
+      config.lmstudio.gpu = "banana";
+
+      await reloadModelWithContext("my-model", 8192, 1);
+
+      assert.ok(warnMock.mock.calls.some((c) => /Invalid GPU value "banana"/.test(c.arguments[0])));
+      assert.ok(!lms.calls().find((c) => c.startsWith("load ")).includes("--gpu"));
+    } finally {
+      config.lmstudio.gpu = savedGpu;
+    }
+  }
+);
