@@ -326,7 +326,8 @@ export async function ensureLMStudioRunning(baseURL) {
  */
 export async function getLoadedModelInfo() {
   try {
-    const modelsURL = `${config.lmstudio.baseURL}/models`;
+    // /v1/models omits context info; LM Studio's native /api/v0/models has loaded_context_length
+    const modelsURL = `${config.lmstudio.baseURL.replace(/\/v1\/?$/, "")}/api/v0/models`;
     const response = await fetch(modelsURL, {
       method: "GET",
       headers: {
@@ -344,14 +345,14 @@ export async function getLoadedModelInfo() {
       return null;
     }
 
-    // Find the configured model or use the first available
+    // Find the configured model or use the first loaded one
     const modelId = config.lmstudio.model;
-    const model = data.data.find((m) => m.id === modelId) || data.data[0];
+    const model = data.data.find((m) => m.id === modelId) || data.data.find((m) => m.state === "loaded") || data.data[0];
 
     return {
       id: model.id,
-      // Context size may be in different fields depending on LM Studio version
-      contextSize: model.context_length || model.max_tokens || config.lmstudio.defaultContext,
+      // Absent when the model is not loaded; the caller then reloads with the size it needs
+      contextSize: model.loaded_context_length || config.lmstudio.defaultContext,
     };
   } catch (error) {
     console.warn(`⚠️  Could not get model info: ${error.message}`);

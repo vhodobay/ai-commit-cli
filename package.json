@@ -7,7 +7,7 @@
     "ai-commit": "./src/index.js"
   },
   "scripts": {
-    "test": "node --test test/git.test.js test/ai.test.js"
+    "test": "node --test test/git.test.js test/ai.test.js test/lmstudio.test.js"
   },
   "keywords": [
     "git",
