@@ -58,6 +58,53 @@ async function ensureSufficientContext(requiredTokens, currentContext) {
 }
 
 /**
+ * Calls Ollama's native /api/chat, the only route that honors options.num_ctx.
+ * The OpenAI-compatible route would silently truncate a diff larger than the default context.
+ * @param {string} userPrompt - The user prompt containing the diff
+ * @returns {Promise<string|undefined>} The raw completion content
+ * @throws {Error} If the diff exceeds the largest context step or the request fails
+ */
+async function ollamaChat(userPrompt) {
+  const { model, baseURL, apiKey, contextSteps, tokenBuffer } = config.ollama;
+  const requiredTokens = estimateTokenCount(SYSTEM_PROMPT) + estimateTokenCount(userPrompt);
+  const numCtx = findRequiredContext(requiredTokens, tokenBuffer, contextSteps);
+
+  if (numCtx === null) {
+    throw new Error(
+      `Diff is ${formatTokenCount(requiredTokens)}, exceeds maximum context (${formatTokenCount(Math.max(...contextSteps)).replace("~", "")}).\n` +
+      `Consider splitting your changes into smaller commits.`
+    );
+  }
+
+  let response;
+  try {
+    response = await fetch(`${baseURL.replace(/\/v1\/?$/, "")}/api/chat`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+        options: { temperature: config.commit.temperature, num_ctx: numCtx },
+      }),
+    });
+  } catch (error) {
+    throw new Error(`API request failed: ${error.message}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${await response.text()}`);
+  }
+  return (await response.json())?.message?.content;
+}
+
+/**
  * Generates a commit message from a git diff using AI.
  * Automatically handles context size by reloading the model if needed.
  * @param {string} diff - The git diff to analyze
@@ -68,34 +115,41 @@ async function ensureSufficientContext(requiredTokens, currentContext) {
 export async function generateCommitMessage(diff, backend = "lmstudio") {
   const isOllama = backend === "ollama";
 
-  const client = new OpenAI({
-    apiKey: isOllama ? config.ollama.apiKey : config.lmstudio.apiKey,
-    baseURL: isOllama ? config.ollama.baseURL : config.lmstudio.baseURL,
-  });
-
   const userPrompt = `
 Here is the staged diff:
 
 ${diff}
 `.trim();
 
-  // Only LM Studio uses dynamic context reloading; Ollama just receives the request.
-  if (!isOllama) {
-    const systemTokens = estimateTokenCount(SYSTEM_PROMPT);
-    const userTokens = estimateTokenCount(userPrompt);
-    const totalInputTokens = systemTokens + userTokens;
-
-    const modelInfo = await getLoadedModelInfo();
-    const currentContext = modelInfo?.contextSize || config.lmstudio.defaultContext;
-    await ensureSufficientContext(totalInputTokens, currentContext);
+  // Ollama sizes num_ctx per request (native API); LM Studio reloads the model with a larger context.
+  if (isOllama) {
+    console.log("🧠 Generating commit message...");
+    const content = await ollamaChat(userPrompt);
+    if (!content) {
+      throw new Error("Invalid API response: missing completion content");
+    }
+    return content.trim();
   }
+
+  const client = new OpenAI({
+    apiKey: config.lmstudio.apiKey,
+    baseURL: config.lmstudio.baseURL,
+  });
+
+  const systemTokens = estimateTokenCount(SYSTEM_PROMPT);
+  const userTokens = estimateTokenCount(userPrompt);
+  const totalInputTokens = systemTokens + userTokens;
+
+  const modelInfo = await getLoadedModelInfo();
+  const currentContext = modelInfo?.contextSize || config.lmstudio.defaultContext;
+  await ensureSufficientContext(totalInputTokens, currentContext);
 
   console.log("🧠 Generating commit message...");
 
   let completion;
   try {
     completion = await client.chat.completions.create({
-      model: isOllama ? config.ollama.model : config.lmstudio.model,
+      model: config.lmstudio.model,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
@@ -105,9 +159,7 @@ ${diff}
   } catch (error) {
     // Check if this is a context-related error and provide helpful message
     if (error.message?.includes("context") || error.message?.includes("token")) {
-      const hint = isOllama
-        ? "Try splitting your changes into smaller commits or using a model with a larger context window."
-        : "Try increasing LMSTUDIO_CONTEXT_STEPS or splitting your changes into smaller commits.";
+      const hint = "Try increasing LMSTUDIO_CONTEXT_STEPS or splitting your changes into smaller commits.";
       throw new Error(`Context error: ${error.message}\n${hint}`);
     }
     throw new Error(`API request failed: ${error.message}`);

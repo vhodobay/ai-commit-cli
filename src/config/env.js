@@ -35,6 +35,9 @@ export const config = {
     baseURL: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434/v1",
     // Ollama does not require an API key, but the OpenAI client expects one
     apiKey: process.env.OLLAMA_API_KEY || "ollama",
+    // num_ctx is chosen per request from these steps (Ollama silently truncates beyond its default ~4k)
+    contextSteps: parseContextSteps(process.env.OLLAMA_CONTEXT_STEPS, [4096, 8192, 16384, 32768]),
+    tokenBuffer: parseInt(process.env.OLLAMA_TOKEN_BUFFER || "350", 10),
   },
   lmstudio: {
     model: process.env.LMSTUDIO_MODEL || "qwen3.5-4b",
