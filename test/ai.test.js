@@ -86,3 +86,18 @@ test("lmstudio: a response without content is rejected", async () => {
 
   await assert.rejects(generateCommitMessage("diff", "lmstudio", "chat-model"), /Invalid API response/);
 });
+
+test("lmstudio: an auth error mentioning a token is not reported as a context error", async () => {
+  stubLMStudioChat(() => new Response("invalid api token", { status: 401 }));
+
+  await assert.rejects(
+    generateCommitMessage("diff", "lmstudio", "chat-model"),
+    (err) => /API request failed: 401 invalid api token/.test(err.message) && !/Context error/.test(err.message),
+  );
+});
+
+test("lmstudio: a 413 mentioning the context gets the context hint", async () => {
+  stubLMStudioChat(() => new Response("request exceeds the context window", { status: 413 }));
+
+  await assert.rejects(generateCommitMessage("diff", "lmstudio", "chat-model"), /Context error:/);
+});

@@ -74,7 +74,7 @@ function chatMessages(userPrompt) {
  * @param {string} [apiKey] - Sent as a Bearer token when set
  * @param {object} body - JSON request body
  * @returns {Promise<any>} The parsed JSON response
- * @throws {Error} "API request failed: ..." on a network error or a non-2xx status
+ * @throws {Error} "API request failed: ..." on a network error or a non-2xx status (the latter carries `status`)
  */
 async function postJson(url, apiKey, body) {
   let response;
@@ -92,7 +92,9 @@ async function postJson(url, apiKey, body) {
   }
 
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${await response.text()}`);
+    const error = new Error(`API request failed: ${response.status} ${await response.text()}`);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -170,8 +172,8 @@ ${diff}
       temperature: config.commit.temperature,
     });
   } catch (error) {
-    // Check if this is a context-related error and provide helpful message
-    if (error.message.includes("context") || error.message.includes("token")) {
+    // Only a 400/413 can be a context overflow; other statuses (e.g. a 401 "invalid token") are not
+    if ([400, 413].includes(error.status) && /context|token/.test(error.message)) {
       const hint = "Try increasing LMSTUDIO_CONTEXT_STEPS or splitting your changes into smaller commits.";
       throw new Error(`Context error: ${error.message}\n${hint}`);
     }
