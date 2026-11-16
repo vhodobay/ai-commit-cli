@@ -28,6 +28,7 @@ async function main() {
 
   // Determine which backend to use: prefer Ollama, fall back to LM Studio
   let backend = "lmstudio";
+  let lmModel = config.lmstudio.model;
 
   console.log("🔍 Checking if Ollama is running...");
   const ollamaAvailable = await checkOllamaAvailable(config.ollama.baseURL);
@@ -38,12 +39,12 @@ async function main() {
   } else {
     console.log("⚠️  Ollama is not reachable, falling back to LM Studio");
     // Ensure LM Studio is running before making API calls
-    await ensureLMStudioRunning(config.lmstudio.baseURL);
+    lmModel = await ensureLMStudioRunning(config.lmstudio.baseURL);
     backend = "lmstudio";
   }
 
   // Generate commit message
-  const commitMsg = await generateCommitMessage(diff, backend);
+  const commitMsg = await generateCommitMessage(diff, backend, lmModel);
 
   console.log("\n📝 Suggested commit message:");
   console.log(`  ${commitMsg}\n`);

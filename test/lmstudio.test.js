@@ -7,6 +7,7 @@ import { config } from "../src/config/env.js";
 import {
   buildLoadArgs,
   checkLMStudioAccessible,
+  ensureLMStudioRunning,
   getLoadedModelInfo,
   reloadModelWithContext,
   startLMStudio,
@@ -377,3 +378,85 @@ test(
     assert.deepEqual(lms.calls(), []);
   }
 );
+
+const loadCalls = (lms) => lms.calls().filter((c) => c.startsWith("load "));
+
+test(
+  "ensureLMStudioRunning adopts an already-loaded model instead of loading a second one",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    t.mock.method(console, "log", () => {});
+    const lms = makeLmsStub();
+    stubLMStudio([
+      { id: "chat-model", type: "llm", state: "loaded" },
+      { id: config.lmstudio.model, type: "llm", state: "not-loaded" },
+    ]);
+
+    const model = await ensureLMStudioRunning(config.lmstudio.baseURL);
+
+    assert.equal(model, "chat-model");
+    assert.deepEqual(loadCalls(lms), []);
+  }
+);
+
+test(
+  "ensureLMStudioRunning prefers the configured model when it is one of several loaded",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    t.mock.method(console, "log", () => {});
+    const lms = makeLmsStub();
+    stubLMStudio([
+      { id: "chat-model", type: "llm", state: "loaded" },
+      { id: config.lmstudio.model, type: "llm", state: "loaded" },
+    ]);
+
+    const model = await ensureLMStudioRunning(config.lmstudio.baseURL);
+
+    assert.equal(model, config.lmstudio.model);
+    assert.deepEqual(loadCalls(lms), []);
+  }
+);
+
+test(
+  "ensureLMStudioRunning loads the configured model when nothing is loaded",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    t.mock.method(console, "log", () => {});
+    const lms = makeLmsStub();
+    stubLMStudio([{ id: config.lmstudio.model, type: "llm", state: "not-loaded" }]);
+
+    const model = await ensureLMStudioRunning(config.lmstudio.baseURL);
+
+    assert.equal(model, config.lmstudio.model);
+    assert.equal(loadCalls(lms).length, 1);
+  }
+);
+
+test(
+  "ensureLMStudioRunning ignores a loaded embedding model",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    t.mock.method(console, "log", () => {});
+    const lms = makeLmsStub();
+    stubLMStudio([
+      { id: "embed", type: "embeddings", state: "loaded" },
+      { id: config.lmstudio.model, type: "llm", state: "not-loaded" },
+    ]);
+
+    const model = await ensureLMStudioRunning(config.lmstudio.baseURL);
+
+    assert.equal(model, config.lmstudio.model);
+    assert.equal(loadCalls(lms).length, 1);
+  }
+);
+
+test("getLoadedModelInfo reads the context of the model it is asked about", async () => {
+  stubLMStudio([
+    { id: "chat-model", type: "llm", state: "loaded", loaded_context_length: 32768 },
+    { id: config.lmstudio.model, type: "llm", state: "not-loaded" },
+  ]);
+
+  const info = await getLoadedModelInfo("chat-model");
+
+  assert.deepEqual(info, { id: "chat-model", contextSize: 32768 });
+});

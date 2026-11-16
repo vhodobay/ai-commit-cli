@@ -28,7 +28,7 @@ src/
 **Main Flow** (orchestrated in `src/index.js`):
 1. Checks if Ollama is reachable via its OpenAI-compatible API (`services/ollama.js`)
 2. If Ollama is available, uses it directly without auto-start
-3. If Ollama is not available, ensures LM Studio is running and auto-starts it if needed (`services/lmstudio.js`)
+3. If Ollama is not available, ensures LM Studio is running and auto-starts it if needed (`services/lmstudio.js`). If LM Studio already has a chat model loaded, that model is used as is (preferring `LMSTUDIO_MODEL` when it is one of several), so no second model is loaded; `LMSTUDIO_MODEL` is loaded only when nothing is
 4. Waits for the selected backend API to become accessible (LM Studio: 30s timeout)
 5. Reads staged git changes using `git diff --cached` (`utils/git.js`)
 6. Sends the diff to the selected backend's API endpoint (`services/ai.js`). Context is sized per request: Ollama sets `num_ctx` on `/api/chat`, and LM Studio reloads the model via `lms` with a larger context if needed
@@ -52,7 +52,7 @@ The tool requires environment variables for configuration:
 - `OLLAMA_API_KEY`: Optional API key, sent as a Bearer header on both the availability check and `/api/chat` (default: `ollama`, which is always sent since it is the fallback; Ollama does not require it)
 - `OLLAMA_CONTEXT_STEPS`: Comma-separated `num_ctx` sizes to choose from (default: 4096,8192,16384,32768)
 - `OLLAMA_TOKEN_BUFFER`: Tokens reserved on top of the prompt estimate when picking `num_ctx` (default: 350)
-- `LMSTUDIO_MODEL`: (Optional) Model ID for the LM Studio AI model (default: `qwen3.5-4b`)
+- `LMSTUDIO_MODEL`: (Optional) Model ID to load when LM Studio has no chat model loaded (default: `qwen3.5-4b`). An already-loaded model takes priority over it
 - `LMSTUDIO_BASE_URL`: LM Studio API endpoint (default: http://localhost:1234/v1)
 - `LMSTUDIO_API_KEY`: LM Studio API key (default: lm-studio)
 - `LMSTUDIO_START_COMMAND`: Command to start LM Studio if not running (platform-specific defaults: `open -a "LM Studio"` on macOS, `start lmstudio` on Windows; set to "false" to disable auto-start)

@@ -242,8 +242,33 @@ async function waitForLMStudio(baseURL, maxWaitTime = 30000, checkInterval = 100
 }
 
 /**
- * Ensures LM Studio is running and the model is loaded.
+ * Lists the chat models LM Studio currently has loaded (embedding models are skipped). Never throws.
  * @param {string} baseURL - The API base URL
+ * @returns {Promise<string[]>} Loaded model IDs, or an empty array if they cannot be determined
+ */
+async function listLoadedChatModels(baseURL) {
+  try {
+    const response = await fetch(`${baseURL.replace(/\/v1\/?$/, "")}/api/v0/models`, {
+      headers: { Authorization: `Bearer ${config.lmstudio.apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const { data } = await response.json();
+    return (Array.isArray(data) ? data : [])
+      .filter((m) => m?.state === "loaded" && m.type !== "embeddings")
+      .map((m) => m.id);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Ensures LM Studio is running and a model is loaded. A model that is already loaded (from earlier
+ * runs or the LM Studio chat) is used as is, so a second model is never loaded alongside it.
+ * @param {string} baseURL - The API base URL
+ * @returns {Promise<string>} The model ID to use
  * @throws {Error} If LM Studio cannot be started or accessed
  */
 export async function ensureLMStudioRunning(baseURL) {
@@ -276,6 +301,15 @@ export async function ensureLMStudioRunning(baseURL) {
     console.log("✓ LM Studio is already running");
   }
 
+  const loaded = await listLoadedChatModels(baseURL);
+  if (loaded.length > 0) {
+    const chosen = loaded.includes(config.lmstudio.model) ? config.lmstudio.model : loaded[0];
+    console.log(
+      chosen === config.lmstudio.model ? "✓ Model is already loaded" : `✓ Using already-loaded model: ${chosen}`
+    );
+    return chosen;
+  }
+
   // Check if model loading is enabled and if we should load the model
   if (config.lmstudio.loadModel && config.lmstudio.model && config.lmstudio.model !== "YOUR_MODEL_ID_HERE") {
     if (isLMSCLIAvailable()) {
@@ -296,6 +330,8 @@ export async function ensureLMStudioRunning(baseURL) {
       console.log("   If using GUI, ensure the model is loaded manually");
     }
   }
+
+  return config.lmstudio.model;
 }
 
 /**
@@ -397,16 +433,17 @@ function contextFromLmsPs(targets) {
 
 /**
  * Gets information about the currently loaded model.
- * The configured model is looked up by `modelIdentifier` first, then by `model`. The context size is
- * never taken from another model. A successful `/api/v0/models` answer is trusted: if the model is missing
+ * The model is looked up by `modelIdentifier` first (only when it is the configured model), then by ID.
+ * The context size is never taken from another model. A successful `/api/v0/models` answer is trusted: if the model is missing
  * or not loaded, the default is returned without calling `lms`. `lms ps --json` is consulted only when
  * v0 did not answer, or reports the model as loaded without a usable context length.
+ * @param {string} [modelId] - The model to look up; defaults to the configured model
  * @returns {Promise<{id: string, contextSize: number}|null>} Model info, or null if LM Studio cannot be queried
  */
-export async function getLoadedModelInfo() {
+export async function getLoadedModelInfo(modelId = config.lmstudio.model) {
   const { baseURL, apiKey, model, modelIdentifier, defaultContext } = config.lmstudio;
-  // `lms load --identifier=X` lists the model under X, so the identifier takes priority
-  const targets = [modelIdentifier, model].filter(Boolean);
+  // `lms load --identifier=X` lists the configured model under X, so the identifier takes priority
+  const targets = (modelId === model ? [modelIdentifier, modelId] : [modelId]).filter(Boolean);
 
   let configuredModel;
   let answered = false;

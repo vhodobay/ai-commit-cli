@@ -23,8 +23,8 @@ Rules:
  * @returns {Promise<number>} The context size after any necessary reloading
  * @throws {Error} If the diff is too large for any available context size
  */
-async function ensureSufficientContext(requiredTokens, currentContext) {
-  const { contextSteps, tokenBuffer, model } = config.lmstudio;
+async function ensureSufficientContext(requiredTokens, currentContext, model) {
+  const { contextSteps, tokenBuffer } = config.lmstudio;
   const totalRequired = requiredTokens + tokenBuffer;
 
   // Check if current context is sufficient
@@ -112,7 +112,7 @@ async function ollamaChat(userPrompt) {
  * @returns {Promise<string>} The generated commit message
  * @throws {Error} If AI generation fails
  */
-export async function generateCommitMessage(diff, backend = "lmstudio") {
+export async function generateCommitMessage(diff, backend = "lmstudio", lmModel = config.lmstudio.model) {
   const isOllama = backend === "ollama";
 
   const userPrompt = `
@@ -140,16 +140,16 @@ ${diff}
   const userTokens = estimateTokenCount(userPrompt);
   const totalInputTokens = systemTokens + userTokens;
 
-  const modelInfo = await getLoadedModelInfo();
+  const modelInfo = await getLoadedModelInfo(lmModel);
   const currentContext = modelInfo?.contextSize || config.lmstudio.defaultContext;
-  await ensureSufficientContext(totalInputTokens, currentContext);
+  await ensureSufficientContext(totalInputTokens, currentContext, lmModel);
 
   console.log("🧠 Generating commit message...");
 
   let completion;
   try {
     completion = await client.chat.completions.create({
-      model: config.lmstudio.model,
+      model: lmModel,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
