@@ -4,7 +4,7 @@
   "description": "AI-powered Git commit message generator using Ollama (preferred) or LM Studio",
   "main": "src/index.js",
   "bin": {
-    "ai-commit": "src/index.js"
+    "ai-commit": "./src/index.js"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
