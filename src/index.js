@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { config, validateConfig } from "./config/env.js";
+import { config } from "./config/env.js";
 import { getStagedDiff, executeGitCommit } from "./utils/git.js";
 import { showHelp, promptConfirmation } from "./utils/ui.js";
 import { ensureLMStudioRunning } from "./services/lmstudio.js";
@@ -23,8 +23,6 @@ async function main() {
   console.log("✓ Found staged changes");
   console.log(`📊 Diff size: ${diff.length} characters\n`);
 
-  // Validate configuration
-  validateConfig();
   console.log(`🤖 Preferred Ollama model: ${config.ollama.model}`);
   console.log(`🤖 Fallback LM Studio model: ${config.lmstudio.model}`);
 

@@ -58,17 +58,3 @@ export const config = {
     temperature: parseFloat(process.env.COMMIT_TEMPERATURE || "0.3"),
   },
 };
-
-/**
- * Validates required environment variables.
- * @throws {Error} If required variables are missing
- */
-export function validateConfig() {
-  if (!config.lmstudio.model) {
-    throw new Error(
-      "LMSTUDIO_MODEL environment variable is not set.\n" +
-      "Please set it to your model ID, e.g.:\n" +
-      "  export LMSTUDIO_MODEL='your-model-id'"
-    );
-  }
-}

@@ -37,7 +37,7 @@ src/
 
 **Key Modules**:
 
-- `config/env.js`: Loads environment variables via dotenv, exports config object, validates required settings
+- `config/env.js`: Loads environment variables via dotenv, exports config object
 - `utils/git.js`: `getStagedDiff()`, `executeGitCommit()` with array arguments to prevent command injection
 - `utils/ui.js`: `showHelp()`, `promptConfirmation()` with TTY detection and 30s timeout
 - `services/lmstudio.js`: `checkLMStudioAccessible()`, `ensureLMStudioRunning()`, platform-specific startup
@@ -49,7 +49,7 @@ The tool requires environment variables for configuration:
 - `OLLAMA_MODEL`: (Optional) Ollama model ID for commit messages (default: `qwen3:4b`)
 - `OLLAMA_BASE_URL`: Ollama OpenAI-compatible API endpoint (default: http://127.0.0.1:11434/v1)
 - `OLLAMA_API_KEY`: Optional API key used only for the OpenAI client (default: `ollama`, but Ollama does not require it)
-- `LMSTUDIO_MODEL`: (Required for LM Studio fallback) Model ID for the LM Studio AI model (default: `qwen3.5-4b`)
+- `LMSTUDIO_MODEL`: (Optional) Model ID for the LM Studio AI model (default: `qwen3.5-4b`)
 - `LMSTUDIO_BASE_URL`: LM Studio API endpoint (default: http://localhost:1234/v1)
 - `LMSTUDIO_API_KEY`: LM Studio API key (default: lm-studio)
 - `LMSTUDIO_START_COMMAND`: Command to start LM Studio if not running (platform-specific defaults: `open -a "LM Studio"` on macOS, `start lmstudio` on Windows; set to "false" to disable auto-start)
@@ -105,15 +105,13 @@ node src/index.js --no-commit
 
 3. **Environment Loading**: dotenv loads `.env` from package root (two directories up from src/config/) in `src/config/env.js`
 
-4. **Environment Validation**: The `validateConfig()` function in `src/config/env.js` checks for required `LMSTUDIO_MODEL` and provides clear error messages if missing
+4. **Prompt Engineering**: The system prompt is defined in `SYSTEM_PROMPT` constant in `src/services/ai.js` and follows Conventional Commits conventions (feat, fix, refactor, etc.)
 
-5. **Prompt Engineering**: The system prompt is defined in `SYSTEM_PROMPT` constant in `src/services/ai.js` and follows Conventional Commits conventions (feat, fix, refactor, etc.)
+5. **Error Handling**: All major functions have try-catch blocks with specific error messages for debugging
 
-6. **Error Handling**: All major functions have try-catch blocks with specific error messages for debugging
+6. **Non-interactive Support**: Detects TTY availability in `promptConfirmation()` (`src/utils/ui.js`) and aborts gracefully in non-interactive environments
 
-7. **Non-interactive Support**: Detects TTY availability in `promptConfirmation()` (`src/utils/ui.js`) and aborts gracefully in non-interactive environments
-
-8. **Module System**: Uses ES modules (`"type": "module"` in package.json), so all imports use `import` syntax and `.js` extensions
+7. **Module System**: Uses ES modules (`"type": "module"` in package.json), so all imports use `import` syntax and `.js` extensions
 
 ## Node Version
 
