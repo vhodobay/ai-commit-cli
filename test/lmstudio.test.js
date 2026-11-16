@@ -30,8 +30,11 @@ afterEach(() => {
 });
 
 // Mirrors real LM Studio: /v1/models has no context info, /api/v0/models does.
-function stubLMStudio(v0Models) {
+function stubLMStudio(v0Models, { v0Status = 200 } = {}) {
   globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/api/v0/models") && v0Status !== 200) {
+      return new Response("Not Found", { status: v0Status });
+    }
     const body = String(url).endsWith("/api/v0/models")
       ? { data: v0Models }
       : { data: v0Models.map(({ id }) => ({ id, object: "model", owned_by: "organization_owner" })) };
@@ -39,19 +42,27 @@ function stubLMStudio(v0Models) {
   };
 }
 
+// POSIX-only: the fake `lms` is a sh script, so every test that uses it must skip on win32.
 /**
  * Puts a fake `lms` executable first on PATH. Every invocation is logged as one line of args.
  * `load` fails the first `failures` times, then succeeds.
+ * `ps --json` prints `psJson` (empty by default).
  */
-function makeLmsStub({ failures = 0 } = {}) {
+function makeLmsStub({ failures = 0, psJson = "" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lms-stub-"));
   tempDirs.push(dir);
   const logFile = path.join(dir, "calls.log");
   const counterFile = path.join(dir, "failures-left");
+  const psFile = path.join(dir, "ps-output.json");
   fs.writeFileSync(counterFile, String(failures));
+  fs.writeFileSync(psFile, psJson);
 
   const script = `#!/bin/sh
 echo "$*" >> "${logFile}"
+if [ "$1" = "ps" ] && [ "$2" = "--json" ]; then
+  cat "${psFile}"
+  exit 0
+fi
 if [ "$1" = "load" ]; then
   n=$(cat "${counterFile}")
   if [ "$n" -gt 0 ]; then
@@ -89,12 +100,144 @@ test("getLoadedModelInfo reports the real loaded context, not the default", asyn
   assert.equal(info.contextSize, 16384);
 });
 
-test("getLoadedModelInfo falls back to the default when the model is not loaded", async () => {
-  stubLMStudio([{ id: config.lmstudio.model, state: "not-loaded" }]);
+test(
+  "getLoadedModelInfo falls back to the default when the model is not loaded",
+  { skip: process.platform === "win32" },
+  async () => {
+    const lms = makeLmsStub();
+    stubLMStudio([{ id: config.lmstudio.model, state: "not-loaded" }]);
+
+    const info = await getLoadedModelInfo();
+
+    assert.equal(info.contextSize, config.lmstudio.defaultContext);
+    assert.ok(!lms.calls().includes("ps --json"), `lms calls were: ${lms.calls()}`);
+  }
+);
+
+test("getLoadedModelInfo matches the configured modelIdentifier before the model ID", async () => {
+  const savedIdentifier = config.lmstudio.modelIdentifier;
+  try {
+    config.lmstudio.modelIdentifier = "my-identifier";
+    stubLMStudio([
+      { id: config.lmstudio.model, state: "loaded", loaded_context_length: 8192 },
+      { id: "my-identifier", state: "loaded", loaded_context_length: 32768 },
+    ]);
+
+    const info = await getLoadedModelInfo();
+
+    assert.equal(info.id, "my-identifier");
+    assert.equal(info.contextSize, 32768);
+  } finally {
+    config.lmstudio.modelIdentifier = savedIdentifier;
+  }
+});
+
+test(
+  "getLoadedModelInfo does not borrow another loaded model's context",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const lms = makeLmsStub();
+    stubLMStudio([
+      { id: "other-model", state: "loaded", loaded_context_length: 32768 },
+      { id: config.lmstudio.model, state: "not-loaded" },
+    ]);
+
+    const info = await getLoadedModelInfo();
+
+    assert.equal(info.id, config.lmstudio.model);
+    assert.equal(info.contextSize, config.lmstudio.defaultContext);
+    assert.ok(!lms.calls().includes("ps --json"), `lms calls were: ${lms.calls()}`);
+  }
+);
+
+test(
+  "getLoadedModelInfo reads the context from `lms ps --json` when /api/v0/models is 404",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const warnMock = t.mock.method(console, "warn", () => {});
+    const lms = makeLmsStub({
+      psJson: JSON.stringify({ models: [{ identifier: config.lmstudio.model, contextLength: 16384 }] }),
+    });
+    stubLMStudio([], { v0Status: 404 });
+
+    const info = await getLoadedModelInfo();
+
+    assert.deepEqual(info, { id: config.lmstudio.model, contextSize: 16384 });
+    assert.ok(lms.calls().includes("ps --json"), `lms calls were: ${lms.calls()}`);
+    assert.equal(warnMock.mock.callCount(), 0, "a 404 should not produce a warning");
+  }
+);
+
+test(
+  "getLoadedModelInfo does not match an `lms ps` entry whose identifier only contains the model",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const lms = makeLmsStub({
+      psJson: JSON.stringify([{ identifier: `${config.lmstudio.model}-instruct-q8`, contextLength: 32768 }]),
+    });
+    stubLMStudio([], { v0Status: 404 });
+
+    const info = await getLoadedModelInfo();
+
+    // Not 32768: the partial match is rejected. v0 did not answer, so the result is null, which ai.js treats as defaultContext.
+    assert.equal(info, null);
+    assert.ok(lms.calls().includes("ps --json"), `lms calls were: ${lms.calls()}`);
+  }
+);
+
+test(
+  "getLoadedModelInfo reports the modelIdentifier and its context from `lms ps` when v0 is 404",
+  { skip: process.platform === "win32" },
+  async () => {
+    const savedIdentifier = config.lmstudio.modelIdentifier;
+    try {
+      config.lmstudio.modelIdentifier = "my-identifier";
+      makeLmsStub({
+        psJson: JSON.stringify([{ identifier: "my-identifier", contextLength: 16384 }]),
+      });
+      stubLMStudio([], { v0Status: 404 });
+
+      const info = await getLoadedModelInfo();
+
+      assert.deepEqual(info, { id: "my-identifier", contextSize: 16384 });
+    } finally {
+      config.lmstudio.modelIdentifier = savedIdentifier;
+    }
+  }
+);
+
+test("getLoadedModelInfo returns null and warns once when v0 throws and `lms` is unavailable", async (t) => {
+  const warnMock = t.mock.method(console, "warn", () => {});
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "no-lms-"));
+  tempDirs.push(emptyDir);
+  savedPath = process.env.PATH;
+  process.env.PATH = emptyDir;
+  _resetLmsCacheForTests();
+  globalThis.fetch = async () => {
+    throw new TypeError("fetch failed");
+  };
 
   const info = await getLoadedModelInfo();
 
-  assert.equal(info.contextSize, config.lmstudio.defaultContext);
+  assert.equal(info, null);
+  assert.equal(warnMock.mock.callCount(), 1);
+});
+
+test("getLoadedModelInfo warns only once across consecutive status 500 responses", async (t) => {
+  const warnMock = t.mock.method(console, "warn", () => {});
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "no-lms-"));
+  tempDirs.push(emptyDir);
+  savedPath = process.env.PATH;
+  process.env.PATH = emptyDir;
+  _resetLmsCacheForTests();
+  stubLMStudio([], { v0Status: 500 });
+
+  await getLoadedModelInfo();
+  await getLoadedModelInfo();
+
+  assert.equal(warnMock.mock.callCount(), 1);
 });
 
 test("buildLoadArgs with only a model ID", () => {

@@ -5,6 +5,9 @@ import { formatContextSize } from "../utils/tokens.js";
 /** Cached result of the `lms` availability check; undefined until first checked. */
 let lmsCliAvailable;
 
+/** Set once a "Could not get model info" warning has been printed, so each process prints at most one. */
+let modelInfoWarned = false;
+
 /**
  * Runs an `lms` CLI command. Never throws.
  * @param {string[]} args - Arguments for `lms`
@@ -78,6 +81,18 @@ function isLMSCLIAvailable() {
  */
 export function _resetLmsCacheForTests() {
   lmsCliAvailable = undefined;
+  modelInfoWarned = false;
+}
+
+/**
+ * Prints a "Could not get model info" warning, but only the first time in this process.
+ * @param {string} message - Warning text
+ */
+function warnModelInfoOnce(message) {
+  if (!modelInfoWarned) {
+    modelInfoWarned = true;
+    console.warn(message);
+  }
 }
 
 /**
@@ -284,43 +299,172 @@ export async function ensureLMStudioRunning(baseURL) {
 }
 
 /**
+ * Returns a value if it is a positive finite number, otherwise undefined.
+ * @param {unknown} value - Candidate context size
+ * @returns {number|undefined} The value, or undefined if it is not a positive finite number
+ */
+function positiveNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Finds the configured model in an `/api/v0/models` list. Targets are tried in order, so an
+ * exact `id` match for the first target wins over the second.
+ * @param {Array<{id?: string}>} models - Entries from `/api/v0/models`
+ * @param {string[]} targets - Model IDs to look for, most specific first
+ * @returns {{id?: string}|undefined} The matching entry, or undefined if none matches
+ */
+function findConfiguredModel(models, targets) {
+  for (const target of targets) {
+    const match = models.find((m) => m?.id === target);
+    if (match) {
+      return match;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Reads the loaded context size from one `lms ps --json` entry.
+ * UNVERIFIED: these field names are not confirmed against a live LM Studio, so several candidates are
+ * tried in order. `maxContextLength` is deliberately not read: it is the model maximum, not the loaded size.
+ * @param {Record<string, unknown>} entry - One model entry from `lms ps --json`
+ * @returns {number|undefined} The first positive finite candidate, or undefined if none is usable
+ */
+function contextFromLmsPsEntry(entry) {
+  for (const key of ["contextLength", "context_length", "loaded_context_length"]) {
+    const value = positiveNumber(entry[key]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Parses the output of `lms ps --json` into a list of model entries. Never throws.
+ * Accepts a top-level array, or an object holding an array (the first array-valued property is used).
+ * @param {string} stdout - Raw stdout from `lms ps --json`
+ * @returns {Record<string, unknown>[]} Object entries, or an empty array if the output is not usable
+ */
+function parseLmsPsEntries(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+
+  const list = Array.isArray(parsed) ? parsed : Object.values(parsed ?? {}).find(Array.isArray);
+  return Array.isArray(list) ? list.filter((e) => e !== null && typeof e === "object") : [];
+}
+
+/**
+ * Finds the `lms ps --json` entry for the configured model. Targets are tried in order, and an entry
+ * matches when its identifier, modelKey, id or path equals the target exactly. Substring matches are never
+ * used, so `qwen3.5-4b` cannot match `qwen3.5-4b-instruct-q8`.
+ * @param {Record<string, unknown>[]} entries - Parsed `lms ps --json` entries
+ * @param {string[]} targets - Identifier and/or model ID to look for, most specific first
+ * @returns {Record<string, unknown>|undefined} The matching entry, or undefined if none matches
+ */
+function findLmsPsEntry(entries, targets) {
+  const fields = ["identifier", "modelKey", "id", "path"];
+
+  for (const target of targets) {
+    const match = entries.find((e) => fields.some((f) => e[f] === target));
+    if (match) {
+      return match;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Reads the loaded context size of the configured model from `lms ps --json`. Never throws.
+ * Only call this when `lms` is available.
+ * @param {string[]} targets - Identifier and/or model ID to look for, most specific first
+ * @returns {number|undefined} The loaded context size, or undefined if it cannot be determined
+ */
+function contextFromLmsPs(targets) {
+  const result = runLms(["ps", "--json"], 3000);
+  if (!result.ok) {
+    return undefined;
+  }
+
+  const entry = findLmsPsEntry(parseLmsPsEntries(result.stdout), targets);
+  return entry ? contextFromLmsPsEntry(entry) : undefined;
+}
+
+/**
  * Gets information about the currently loaded model.
- * @returns {Promise<{id: string, contextSize: number}|null>} Model info or null if not available
+ * The configured model is looked up by `modelIdentifier` first, then by `model`. The context size is
+ * never taken from another model. A successful `/api/v0/models` answer is trusted: if the model is missing
+ * or not loaded, the default is returned without calling `lms`. `lms ps --json` is consulted only when
+ * v0 did not answer, or reports the model as loaded without a usable context length.
+ * @returns {Promise<{id: string, contextSize: number}|null>} Model info, or null if LM Studio cannot be queried
  */
 export async function getLoadedModelInfo() {
+  const { baseURL, apiKey, model, modelIdentifier, defaultContext } = config.lmstudio;
+  // `lms load --identifier=X` lists the model under X, so the identifier takes priority
+  const targets = [modelIdentifier, model].filter(Boolean);
+
+  let configuredModel;
+  let answered = false;
   try {
     // /v1/models omits context info; LM Studio's native /api/v0/models has loaded_context_length
-    const modelsURL = `${config.lmstudio.baseURL.replace(/\/v1\/?$/, "")}/api/v0/models`;
+    const modelsURL = `${baseURL.replace(/\/v1\/?$/, "")}/api/v0/models`;
     const response = await fetch(modelsURL, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${config.lmstudio.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       signal: AbortSignal.timeout(5000),
     });
 
     if (!response.ok) {
-      return null;
+      // 404 is normal on older LM Studio versions without /api/v0, so only other statuses are unexpected
+      if (response.status !== 404) {
+        warnModelInfoOnce(`⚠️  Could not get model info: LM Studio responded with status ${response.status}`);
+      }
+    } else {
+      const data = await response.json();
+      if (Array.isArray(data?.data)) {
+        answered = true;
+        configuredModel = findConfiguredModel(data.data, targets);
+      }
     }
-
-    const data = await response.json();
-    if (!data?.data?.length) {
-      return null;
-    }
-
-    // Find the configured model or use the first loaded one
-    const modelId = config.lmstudio.model;
-    const model = data.data.find((m) => m.id === modelId) || data.data.find((m) => m.state === "loaded") || data.data[0];
-
-    return {
-      id: model.id,
-      // Absent when the model is not loaded; the caller then reloads with the size it needs
-      contextSize: model.loaded_context_length || config.lmstudio.defaultContext,
-    };
   } catch (error) {
-    console.warn(`⚠️  Could not get model info: ${error.message}`);
+    warnModelInfoOnce(`⚠️  Could not get model info: ${error.message}`);
+  }
+
+  // Same for every return below: the configured identifier if set, otherwise the model ID
+  const id = configuredModel?.id ?? targets[0] ?? model;
+
+  if (answered) {
+    // lms ps lists only loaded models, so a v0 answer that does not show the model loaded is final
+    if (configuredModel?.state !== "loaded") {
+      return { id, contextSize: defaultContext };
+    }
+    const reportedContext = positiveNumber(configuredModel.loaded_context_length);
+    if (reportedContext !== undefined) {
+      return { id, contextSize: reportedContext };
+    }
+  }
+
+  // v0 did not answer, or reports the model loaded without a usable size: ask the CLI
+  if (isLMSCLIAvailable()) {
+    const cliContext = contextFromLmsPs(targets);
+    if (cliContext !== undefined) {
+      return { id, contextSize: cliContext };
+    }
+  }
+
+  if (!answered) {
     return null;
   }
+
+  // Loaded without a reported size, and the CLI gave nothing: treat the context as unknown
+  return { id, contextSize: defaultContext };
 }
 
 /**
