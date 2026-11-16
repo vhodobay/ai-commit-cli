@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 /**
  * Gets the staged git diff.
@@ -7,7 +7,12 @@ import { execSync, spawnSync } from "node:child_process";
  */
 export function getStagedDiff() {
   try {
-    const diff = execSync("git diff --cached", { encoding: "utf8" });
+    // Lockfiles are huge and add nothing to a commit message; maxBuffer covers other big files.
+    const diff = execFileSync(
+      "git",
+      ["diff", "--cached", "--", ".", ":!*.lock", ":!*-lock.*"],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
     return diff.trim();
   } catch (error) {
     if (error.status === 128) {
