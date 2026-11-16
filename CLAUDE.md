@@ -42,7 +42,7 @@ src/
 - `utils/git.js`: `getStagedDiff()`, `executeGitCommit()` with array arguments to prevent command injection
 - `utils/ui.js`: `showHelp()`, `promptConfirmation()` with TTY detection and 30s timeout
 - `services/lmstudio.js`: `checkLMStudioAccessible()`, `ensureLMStudioRunning()`, platform-specific startup
-- `services/ai.js`: `generateCommitMessage()`, `ollamaChat()` (native `/api/chat`), system prompt definition, OpenAI client initialization (LM Studio only)
+- `services/ai.js`: `generateCommitMessage()`, `ollamaChat()` (native `/api/chat`), system prompt definition, plain `fetch` calls to LM Studio's `/chat/completions` (no SDK dependency)
 
 ## Environment Configuration
 

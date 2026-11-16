@@ -33,7 +33,7 @@ export const config = {
     model: process.env.OLLAMA_MODEL || "qwen3:4b",
     // Use Ollama's OpenAI-compatible HTTP API by default
     baseURL: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434/v1",
-    // Ollama does not require an API key, but the OpenAI client expects one
+    // Ollama does not require an API key; it is sent as a Bearer token only for proxies that want one
     apiKey: process.env.OLLAMA_API_KEY || "ollama",
     // num_ctx is chosen per request from these steps (Ollama silently truncates beyond its default ~4k)
     contextSteps: parseContextSteps(process.env.OLLAMA_CONTEXT_STEPS, [4096, 8192, 16384, 32768]),

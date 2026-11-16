@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import { config } from "../config/env.js";
 import { estimateTokenCount, findRequiredContext, formatContextSize, formatTokenCount } from "../utils/tokens.js";
 import { getLoadedModelInfo, reloadModelWithContext } from "./lmstudio.js";
@@ -58,6 +57,47 @@ async function ensureSufficientContext(requiredTokens, currentContext, model) {
 }
 
 /**
+ * Builds the chat messages for a commit message request.
+ * @param {string} userPrompt - The user prompt containing the diff
+ * @returns {{role: string, content: string}[]} System and user messages
+ */
+function chatMessages(userPrompt) {
+  return [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: userPrompt },
+  ];
+}
+
+/**
+ * POSTs JSON to a chat endpoint and returns the parsed response.
+ * @param {string} url - Full endpoint URL
+ * @param {string} [apiKey] - Sent as a Bearer token when set
+ * @param {object} body - JSON request body
+ * @returns {Promise<any>} The parsed JSON response
+ * @throws {Error} "API request failed: ..." on a network error or a non-2xx status
+ */
+async function postJson(url, apiKey, body) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new Error(`API request failed: ${error.message}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${await response.text()}`);
+  }
+  return response.json();
+}
+
+/**
  * Calls Ollama's native /api/chat, the only route that honors options.num_ctx.
  * The OpenAI-compatible route would silently truncate a diff larger than the default context.
  * @param {string} userPrompt - The user prompt containing the diff
@@ -76,32 +116,13 @@ async function ollamaChat(userPrompt) {
     );
   }
 
-  let response;
-  try {
-    response = await fetch(`${baseURL.replace(/\/v1\/?$/, "")}/api/chat`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        model,
-        stream: false,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-        options: { temperature: config.commit.temperature, num_ctx: numCtx },
-      }),
-    });
-  } catch (error) {
-    throw new Error(`API request failed: ${error.message}`);
-  }
-
-  if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${await response.text()}`);
-  }
-  return (await response.json())?.message?.content;
+  const data = await postJson(`${baseURL.replace(/\/v1\/?$/, "")}/api/chat`, apiKey, {
+    model,
+    stream: false,
+    messages: chatMessages(userPrompt),
+    options: { temperature: config.commit.temperature, num_ctx: numCtx },
+  });
+  return data?.message?.content;
 }
 
 /**
@@ -131,11 +152,6 @@ ${diff}
     return content.trim();
   }
 
-  const client = new OpenAI({
-    apiKey: config.lmstudio.apiKey,
-    baseURL: config.lmstudio.baseURL,
-  });
-
   const systemTokens = estimateTokenCount(SYSTEM_PROMPT);
   const userTokens = estimateTokenCount(userPrompt);
   const totalInputTokens = systemTokens + userTokens;
@@ -148,21 +164,18 @@ ${diff}
 
   let completion;
   try {
-    completion = await client.chat.completions.create({
+    completion = await postJson(`${config.lmstudio.baseURL}/chat/completions`, config.lmstudio.apiKey, {
       model: lmModel,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
+      messages: chatMessages(userPrompt),
       temperature: config.commit.temperature,
     });
   } catch (error) {
     // Check if this is a context-related error and provide helpful message
-    if (error.message?.includes("context") || error.message?.includes("token")) {
+    if (error.message.includes("context") || error.message.includes("token")) {
       const hint = "Try increasing LMSTUDIO_CONTEXT_STEPS or splitting your changes into smaller commits.";
       throw new Error(`Context error: ${error.message}\n${hint}`);
     }
-    throw new Error(`API request failed: ${error.message}`);
+    throw error;
   }
 
   // Validate API response
